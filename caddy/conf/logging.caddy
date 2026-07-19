@@ -1,0 +1,18 @@
+# 结构化日志配置（独立可用）
+# 单独部署：caddy run --config logging.caddy
+# 使用 transform-encoder 输出 JSON 格式日志（error + access）
+{
+	log {
+		output file /var/log/caddy/error.log
+		format transform
+		level ERROR
+	}
+}
+
+:8080 {
+	log {
+		output file /var/log/caddy/access.log
+		format transform
+	}
+	respond "logging example (JSON logs via transform-encoder)" 200
+}

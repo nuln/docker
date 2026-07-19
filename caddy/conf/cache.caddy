@@ -1,0 +1,15 @@
+# 缓存插件配置（独立可用）
+# 单独部署：caddy run --config cache.caddy
+# 对 /static* 路径启用缓存，加速静态资源
+{
+	order cache before rewrite
+}
+
+:8080 {
+	@static path /static*
+	cache @static {
+		ttl 1h
+		stale 24h
+	}
+	respond "cache example (caches /static*)" 200
+}

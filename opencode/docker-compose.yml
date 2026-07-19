@@ -1,0 +1,45 @@
+name: opencode
+services:
+  opencode:
+    image: ${OPENCODE_IMAGE:-ghcr.io/nuln/opencode:latest}
+    container_name: opencode
+
+    # `opencode web` provides BOTH the web UI and the API on the same port.
+    command: opencode web --hostname 0.0.0.0 --port 4096
+
+    ports:
+      # Exposed on all interfaces. For remote/phone access use Tailscale:
+      # install Tailscale on the host AND the phone, then open
+      #   http://<tailscale-ip>:4096
+      # The Tailscale tunnel encrypts traffic; still keep OPENCODE_SERVER_PASSWORD set.
+      - "4096:4096"
+
+    volumes:
+      - ./data/share:/home/opencode/.local/share/opencode
+      - ./data/state:/home/opencode/.local/state/opencode
+      - ./data/config:/home/opencode/.config/opencode
+      - ./data/cache:/home/opencode/cache
+      # Your code project(s) - OpenCode operates on this directory.
+      # Make sure the `opencode` user (uid 1000 in the image) can read/write it;
+      # if not, run: chown -R 1000:1000 ./workspace
+      - ./workspace:/home/opencode/workspace
+
+    environment:
+      - TZ=${TZ}
+      - OPENCODE_SERVER_USERNAME=${OPENCODE_SERVER_USERNAME}
+      - OPENCODE_SERVER_PASSWORD=${OPENCODE_SERVER_PASSWORD}
+      # --- AI platform API keys are referenced via {env:XXX} in data/config/opencode.json,
+      #     supplied by each deployment's runtime env; not passed through here, not in .env ---
+      # --- Low-power machine (e.g. J3455/N5105) resource limits ---
+      # cargo parallel build jobs (J3455 default 1; N5105 can use 2)
+      - CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-1}
+      # Go build/run parallelism
+      - GOMAXPROCS=${GOMAXPROCS:-2}
+      # make parallelism (C/Python source builds, etc.; J3455 default -j2)
+      - MAKEFLAGS=${MAKEFLAGS:--j2}
+
+    # Overall container resource cap, to protect the weak host machine
+    mem_limit: ${MEM_LIMIT:-4g}
+    cpus: ${CPU_LIMIT:-2}
+
+    restart: unless-stopped

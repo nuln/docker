@@ -1,0 +1,14 @@
+# 备份数据（云盘 + 照片），运行时生成，不入库
+data
+
+# 配置目录：config.yaml 需入库，但 keyring 密文/会话/日志不入库
+config/python_keyring/
+config/session_data/
+config/*.log
+
+# 环境变量（含 KEYRING_PASSPHRASE 敏感信息，绝不入库）
+.env
+
+# macOS / 编辑器
+.DS_Store
+.vscode

@@ -1,0 +1,55 @@
+name: caddy
+
+services:
+  caddy:
+    image: ${CADDY_IMAGE:-ghcr.io/nuln/caddy:latest}
+    # Start with Caddyfile (layer4 uses the global layer4 block, HTTP uses Caddyfile directives)
+    command: caddy run --config /etc/caddy/Caddyfile
+    container_name: caddy
+    networks:
+      - caddy_net
+
+    ports:
+      # 80/443 are the Caddy reverse-proxy entry; 443/udp is for UDP SNI forwarding (layer4)
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+      # Reverse-proxy style ports (open as needed)
+      - "2053:2053"
+      - "8080:8080"
+      - "8443:8443"
+
+    volumes:
+      # Main Caddy config + standalone snippets per plugin (conf/)
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./conf:/etc/caddy/conf:ro
+      # Cert/data persistence (ACME-issued certs)
+      - ./data:/certs
+      # Static site root
+      - ./www:/var/www
+      # Logs
+      - ./logs:/var/log/caddy
+
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      # Cloudflare DNS-01 verification API Token (for cert requests, injected at runtime, not written to disk)
+      # Create a Token in Cloudflare with Zone:DNS edit permission only
+      - CF_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
+      # Env vars needed by caddy-security + PocketID OIDC
+      # Create an OIDC Client in PocketID, callback:
+      #   https://<your caddy domain>/caddy-security/oauth2/pocketid/authorization-code-callback
+      - POCKETID_CLIENT_ID=${POCKETID_CLIENT_ID}
+      - POCKETID_CLIENT_SECRET=${POCKETID_CLIENT_SECRET}
+      # Shared secret for caddy-security to sign/verify JWT (generate with openssl rand -base64 32)
+      - JWT_SECRET=${JWT_SECRET}
+      # Container timezone / resources, extensible
+
+    # Low-power machine resource cap (consistent with the opencode sub-project convention)
+    mem_limit: ${MEM_LIMIT:-512m}
+    cpus: ${CPU_LIMIT:-1}
+
+    restart: unless-stopped
+
+networks:
+  caddy_net:
+    name: caddy_net

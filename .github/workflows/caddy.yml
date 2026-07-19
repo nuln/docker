@@ -1,0 +1,101 @@
+name: caddy
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "caddy/**"
+      - ".github/workflows/caddy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - name: Determine Caddy version
+        id: ver
+        run: |
+          VERSION=$(curl -fsSL https://api.github.com/repos/caddyserver/caddy/releases/latest \
+            | jq -r '.tag_name' | sed 's/^v//')
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            echo "Failed to fetch caddy version" >&2
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building Caddy version: ${VERSION}"
+
+  build:
+    needs: version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - dockerfile: Dockerfile
+            tag_suffix: ""
+            extra_tags: "ghcr.io/nuln/caddy:latest"
+            verify: true
+          - dockerfile: Dockerfile.base
+            tag_suffix: "-base"
+            extra_tags: "ghcr.io/nuln/caddy:base"
+            verify: false
+          - dockerfile: Dockerfile.full
+            tag_suffix: "-full"
+            extra_tags: "ghcr.io/nuln/caddy:full"
+            verify: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (multi-arch)
+        uses: docker/build-push-action@v7
+        with:
+          context: caddy
+          file: caddy/${{ matrix.variant.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          build-args: |
+            CADDY_VERSION=${{ needs.version.outputs.version }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.version.outputs.version }}
+          tags: |
+            ghcr.io/nuln/caddy:${{ needs.version.outputs.version }}${{ matrix.variant.tag_suffix }}
+            ${{ matrix.variant.extra_tags }}
+          cache-from: type=registry,ref=ghcr.io/nuln/caddy:cache-${{ matrix.variant.dockerfile }}
+          cache-to: type=registry,ref=ghcr.io/nuln/caddy:cache-${{ matrix.variant.dockerfile }},mode=max
+
+      - name: Verify image caddy version matches tag
+        if: matrix.variant.verify
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          docker pull --platform linux/amd64 "ghcr.io/nuln/caddy:${VERSION}"
+          IMG_VER=$(docker run --rm --platform linux/amd64 "ghcr.io/nuln/caddy:${VERSION}" caddy version 2>/dev/null | head -1 | awk '{print $1}' | sed 's/^v//')
+          echo "In-image caddy version: ${IMG_VER}"
+          echo "Expected tag version:   ${VERSION}"
+          IMG_VER_N=$(echo "$IMG_VER" | tr -d '[:space:]' | sed 's/^v//')
+          VER_N=$(echo "$VERSION" | tr -d '[:space:]' | sed 's/^v//')
+          if [ "$IMG_VER_N" != "$VER_N" ]; then
+            echo "Version mismatch! in-image=${IMG_VER} tag=${VERSION}" >&2
+            exit 1
+          fi
+          echo "✅ In-image Caddy version matches tag version (${VERSION})"

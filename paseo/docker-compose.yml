@@ -1,0 +1,25 @@
+name: paseo
+services:
+  paseo:
+    image: ${PASEO_IMAGE:-ghcr.io/nuln/paseo:latest}
+    container_name: paseo
+
+    ports:
+      - "6767:6767"
+
+    volumes:
+      - ./data/home:/home/paseo
+      - ./data/config:/etc/paseo
+      - ./workspace:/workspace
+
+    environment:
+      - TZ=${TZ}
+      - PASEO_PASSWORD=${PASEO_PASSWORD}
+      - PASEO_LISTEN=${PASEO_LISTEN:-0.0.0.0:6767}
+      - PASEO_LOG_LEVEL=${PASEO_LOG_LEVEL:-info}
+      - PASEO_WEB_UI_ENABLED=${PASEO_WEB_UI_ENABLED:-true}
+
+    mem_limit: ${MEM_LIMIT:-2g}
+    cpus: ${CPU_LIMIT:-2}
+
+    restart: unless-stopped

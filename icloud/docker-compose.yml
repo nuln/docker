@@ -1,0 +1,39 @@
+name: icloud
+
+services:
+  icloud:
+    image: ${ICLOUD_IMAGE:-ghcr.io/nuln/icloud:latest}
+    container_name: icloud
+    restart: unless-stopped
+
+    environment:
+      # Must match the uid/gid of the host user running docker, otherwise the mount has no permission.
+      # fnOS default user salute5611 = uid 1000 / gid 1001(Users).
+      # If you changed the user or switched systems, set the actual uid/gid from the `id` command.
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1001}
+      - TZ=${TZ:-Asia/Shanghai}
+      - ENV_CONFIG_FILE_PATH=/config/config.yaml
+      # Encryption passphrase: injected at runtime, never written to the data volume / backup.
+      # Fill KEYRING_PASSPHRASE in .env, or export it before `docker compose up`.
+      - KEYRING_PASSPHRASE=${KEYRING_PASSPHRASE}
+      # ===== Telegram notification proxy (uncomment for users in China region) =====
+      # The requests library auto-reads HTTPS_PROXY, so Telegram goes through the proxy;
+      # NO_PROXY keeps iCloud sync on direct connection (recommended)
+      # HTTPS_PROXY: "http://<proxy IP>:<port>"
+      # NO_PROXY: "setup.icloud.com,*.icloud.com,setup.icloud.com.cn,*.icloud.com.cn,www.icloud.com,*.icloud-content.com"
+
+    volumes:
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+      # Backup data: when Drive and Photos are on different disks, change the host path to the real mount point
+      # (e.g. - /disk1/icloud-drive:/icloud/drive)
+      - ./data/drive:/icloud/drive      # iCloud Drive
+      - ./data/photos:/icloud/photos    # iCloud Photos
+      - ./config:/config                # config + encrypted keyring (ciphertext)
+
+    # Low-power machine resource cap (consistent with other sub-projects)
+    mem_limit: ${MEM_LIMIT:-1g}
+    cpus: ${CPU_LIMIT:-2}
+
+    # No ports exposed: iCloud sync is an outbound connection, no port mapping needed

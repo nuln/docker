@@ -1,0 +1,51 @@
+{
+  "apps": {
+    "layer4": {
+      "servers": {
+        "udpsni": {
+      "listen": ["udp/:443"],
+      "routes": [
+        {
+          "match": [
+            { "tls": { "sni": ["example.com", "www.example.com", "example.cn", "www.example.cn"] } }
+          ],
+          "handle": [
+            {
+              "handler": "proxy",
+              "upstreams": [{ "dial": ["udp/hysteria:3443"] }]
+            }
+          ]
+        }
+      ]
+    },
+        "tcpsni": {
+      "listen": ["tcp/:443"],
+      "routes": [
+        {
+          "match": [
+            { "tls": { "sni": ["example.com", "www.example.com"] } }
+          ],
+          "handle": [
+            {
+              "handler": "proxy",
+              "upstreams": [{ "dial": ["tcp/example_backend:443"] }]
+            }
+          ]
+        },
+        {
+          "match": [
+            { "tls": { "sni": ["example.cn", "www.example.cn"] } }
+          ],
+          "handle": [
+            {
+              "handler": "proxy",
+              "upstreams": [{ "dial": ["tcp/example_cn_backend:443"] }]
+            }
+          ]
+        }
+      ]
+    }
+      }
+    }
+  }
+}

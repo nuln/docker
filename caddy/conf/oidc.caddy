@@ -1,0 +1,55 @@
+# OIDC 登录配置（caddy-security + PocketID，独立可用）
+# 单独部署：caddy run --config oidc.caddy
+# 演示：仅 /protected/* 需要 PocketID 登录，其余路径直接放行
+# 环境变量：POCKETID_CLIENT_ID / POCKETID_CLIENT_SECRET / JWT_SECRET（运行期注入）
+{
+	order authenticate before respond
+	order authorize before basicauth
+
+	security {
+		oauth identity provider pocketid {
+			realm pocketid
+			driver generic
+			client_id {env.POCKETID_CLIENT_ID}
+			client_secret {env.POCKETID_CLIENT_SECRET}
+			scopes openid email profile
+			base_auth_url https://id.example.com
+			metadata_url https://id.example.com/.well-known/openid-configuration
+			delay_start 3
+		}
+		authentication portal myportal {
+			crypto key sign-verify {env.JWT_SECRET}
+			crypto default token lifetime 3600
+			enable identity provider pocketid
+			cookie domain example.com
+			transform user {
+				match realm pocketid
+				action add role user
+			}
+		}
+		authorization policy pocketid {
+			set auth url /caddy-security/oauth2/pocketid
+			crypto key verify {env.JWT_SECRET}
+			allow roles user
+			inject headers with claims
+		}
+	}
+}
+
+example.com, www.example.com {
+	# 只保护 /protected/* 子路径
+	@protected path /protected/*
+	handle @protected {
+		authenticate with myportal
+		authorize with pocketid
+		respond "protected area (login required)" 200
+	}
+	handle {
+		respond "public area" 200
+	}
+}
+
+# 认证门户登录入口
+auth.example.com {
+	authenticate with myportal
+}

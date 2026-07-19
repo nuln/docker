@@ -1,0 +1,144 @@
+# 主配置入口：聚合各插件能力
+# 部署：caddy run --config /etc/caddy/Caddyfile
+#
+# 设计说明：
+#   - 本文件为生产聚合配置，自带全部全局选项（order / security / layer4 等）。
+#   - conf/ 下每个 *.caddy 是「可独立部署」的最小示例（单独 caddy run --config conf/xxx.caddy），
+#     不直接 import 进本文件（避免重复全局块冲突）。
+#   - conf/l4.json 为 layer4（四层）独立配置文件，可用 caddy run --config conf/l4.json 单独验证。
+{
+	# 各插件指令的执行顺序（必须声明，否则 caddy 报错）
+	order rate_limit before basicauth
+	order cache before rewrite
+	order authenticate before respond
+	order authorize before basicauth
+
+	# layer4（四层）分流：将 443 的 UDP/TCP 按 SNI 转发到后端
+	layer4 {
+		udp/:443 {
+			route {
+				proxy {
+					upstream udp/hysteria:3443
+				}
+			}
+		}
+		tcp/:443 {
+			@examplecn tls sni example.cn, www.example.cn
+			route @examplecn {
+				proxy {
+					upstream tcp/example_cn_backend:443
+				}
+			}
+			route {
+				proxy {
+					upstream tcp/example_backend:443
+				}
+			}
+		}
+	}
+
+	# 前置代理流量（proxy_protocol + TLS）
+	servers :8443 {
+		listener_wrappers {
+			proxy_protocol {
+				allow 172.0.0.0/8
+			}
+			tls
+		}
+	}
+
+	# caddy-security：PocketID OIDC
+	security {
+		oauth identity provider pocketid {
+			realm pocketid
+			driver generic
+			client_id {env.POCKETID_CLIENT_ID}
+			client_secret {env.POCKETID_CLIENT_SECRET}
+			scopes openid email profile
+			base_auth_url https://id.example.com
+			metadata_url https://id.example.com/.well-known/openid-configuration
+			delay_start 3
+		}
+		authentication portal myportal {
+			crypto key sign-verify {env.JWT_SECRET}
+			crypto default token lifetime 3600
+			enable identity provider pocketid
+			cookie domain example.com
+			transform user {
+				match realm pocketid
+				action add role user
+			}
+		}
+		authorization policy pocketid {
+			set auth url /caddy-security/oauth2/pocketid
+			crypto key verify {env.JWT_SECRET}
+			allow roles user
+			inject headers with claims
+		}
+	}
+
+	# Cloudflare DNS-01 证书申请（不依赖 80 端口，支持通配符）
+	storage file_system {
+		root /certs
+	}
+	email admin@example.com
+	acme_dns cloudflare {env.CF_DNS_API_TOKEN}
+}
+
+# ============ 实际站点 ============
+example.com, www.example.com {
+	@www host www.example.com
+	redir @www https://example.com{uri} permanent
+
+	@protected path /protected/*
+	handle @protected {
+		authenticate with myportal
+		authorize with pocketid
+		file_server /var/www/example.com
+	}
+	handle {
+		file_server /var/www/example.com
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		Alt-Svc "h3=\":443\"; ma=2592000"
+	}
+}
+
+example.cn, www.example.cn {
+	@www host www.example.cn
+	redir @www https://example.cn{uri} permanent
+	handle {
+		file_server /var/www/example.cn
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		Alt-Svc "h3=\":443\"; ma=2592000"
+	}
+}
+
+# 公开后端（由前置代理经 :8443 转来）
+:8443 {
+	file_server /var/www/html
+}
+
+# HTTP 全部跳转 HTTPS
+:80 {
+	redir https://{host}{uri} permanent
+}
+
+# 备用端口跳转
+:8080 {
+	redir https://{host}{uri} permanent
+}
+
+# WebSocket / 代理入口
+:2053 {
+	@ws path /ws*
+	handle @ws {
+		reverse_proxy xray:8444
+	}
+	handle {
+		file_server /var/www/html
+	}
+}

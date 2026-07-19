@@ -1,0 +1,15 @@
+# Cloudflare DNS-01 证书配置（独立可用）
+# 单独部署：caddy run --config cloudflare.caddy
+# 证书申请走 Cloudflare DNS 验证，不依赖 80 端口，支持通配符
+# CF_DNS_API_TOKEN 通过环境变量注入（运行期，不写盘）
+{
+	storage file_system {
+		root /certs
+	}
+	email admin@example.com
+	acme_dns cloudflare {env.CF_DNS_API_TOKEN}
+}
+
+example.com, www.example.com {
+	respond "cloudflare DNS-01 TLS example" 200
+}

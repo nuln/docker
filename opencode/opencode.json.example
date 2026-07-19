@@ -1,0 +1,118 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  "server": {},
+
+  "model": "opencode/deepseek-v4-flash-free",
+  "small_model": "opencode/big-pickle",
+
+  "provider": {
+    "anthropic": {
+      "options": {
+        "apiKey": "{env:ANTHROPIC_API_KEY}",
+        "timeout": 600000,
+        "setCacheKey": true
+      },
+      "models": {
+        "claude-sonnet-4-5": {
+          "options": {
+            "thinking": { "type": "enabled", "budgetTokens": 16000 }
+          }
+        }
+      }
+    },
+
+    "openai": {
+      "options": {
+        "apiKey": "{env:OPENAI_API_KEY}",
+        "baseURL": "https://api.openai.com/v1",
+        "timeout": 600000,
+        "setCacheKey": true
+      }
+    },
+
+    "deepseek": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "DeepSeek",
+      "options": {
+        "baseURL": "https://api.deepseek.com/v1",
+        "apiKey": "{env:DEEPSEEK_API_KEY}",
+        "timeout": 600000,
+        "setCacheKey": true
+      },
+      "models": {
+        "deepseek-v4-flash": { "name": "DeepSeek V4 Flash" },
+        "deepseek-v4-pro": { "name": "DeepSeek V4 Pro" }
+      }
+    },
+
+    "gemini": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Gemini (OpenAI-compatible gateway)",
+      "options": {
+        "baseURL": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "apiKey": "{env:GEMINI_API_KEY}",
+        "timeout": 600000
+      },
+      "models": {
+        "gemini-2.5-pro": { "name": "Gemini 2.5 Pro" },
+        "gemini-2.5-flash": { "name": "Gemini 2.5 Flash" }
+      }
+    },
+
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama (local)",
+      "options": {
+        "baseURL": "http://host.docker.internal:11434/v1"
+      },
+      "models": {
+        "qwen3-coder:latest": { "name": "Qwen3 Coder (Ollama)" },
+        "llama3.1:latest": { "name": "Llama 3.1 (Ollama)" }
+      }
+    },
+
+    "opencode": {
+      "name": "OpenCode (official free models)",
+      "options": {
+        "apiKey": "{env:OPENCODE_API_KEY}"
+      },
+      "models": {
+        "big-pickle": { "name": "Big Pickle (free)" },
+        "hy3-free": { "name": "HY3 Free" },
+        "deepseek-v4-flash-free": { "name": "DeepSeek V4 Flash (Free)" },
+        "mimo-v2.5-free": { "name": "Mimo 2.5 (Free)" },
+        "nemotron-3-ultra-free": { "name": "Nemotron 3 Ultra (Free)" },
+        "north-mini-code-free": { "name": "North Mini Code (Free)" },
+        "gpt-5.1-codex": { "name": "GPT 5.1 Codex (Zen, paid)" }
+      }
+    }
+  },
+
+  "agent": {
+    "coder": {
+      "model": "opencode/deepseek-v4-flash-free"
+    },
+    "task": {
+      "model": "opencode/deepseek-v4-flash-free"
+    },
+    "title": {
+      "model": "opencode/big-pickle"
+    },
+    "explain": {
+      "model": "opencode/hy3-free"
+    },
+    "chat": {
+      "model": "opencode/big-pickle"
+    },
+    "mini": {
+      "model": "opencode/north-mini-code-free"
+    },
+    "free": {
+      "model": "opencode/big-pickle"
+    },
+    "list": {
+      "model": "opencode/mimo-v2.5-free"
+    }
+  }
+}

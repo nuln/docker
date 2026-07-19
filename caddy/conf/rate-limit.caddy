@@ -1,0 +1,17 @@
+# 限流插件配置（独立可用）
+# 单独部署：caddy run --config rate-limit.caddy
+# 限流：每 IP 每分钟最多 100 请求，超限返回 429
+{
+	order rate_limit before basicauth
+}
+
+:8080 {
+	rate_limit {
+		zone per_ip {
+			key {http.request.remote.host}
+			events 100
+			window 1m
+		}
+	}
+	respond "rate-limited example (100 req/min per IP)" 200
+}

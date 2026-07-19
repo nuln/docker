@@ -1,0 +1,72 @@
+app:
+  logger:
+    # Log level: debug / info / warning / error
+    level: "info"
+    filename: "/config/icloud.log"
+  credentials:
+    # Your iCloud account (Apple ID), required
+    username: "please@replace.me"
+    # Retry interval on login failure (seconds); -1 means retry once then exit;
+    # for backups keep a larger value so it auto-retries on network/2FA glitches
+    retry_login_interval: 600
+  # Backup root dir (inside container), maps to the mounted ./data
+  root: "/icloud"
+  # China-region Apple accounts set this to china; otherwise keep global
+  region: global
+  # Parallel download threads: auto (by CPU cores, max 8) or integer (max 16); big libraries speed up a lot
+  max_threads: auto
+  # Disable anonymous usage stats (by default it collects version/sync volume etc., not passwords)
+  usage_tracking:
+    enabled: false
+  notifications:
+    # Sync summary notification: recommended on, to monitor whether backups run normally
+    sync_summary:
+      enabled: true
+      on_success: true
+      on_error: true
+      min_downloads: 1
+    # To enable notifications, uncomment the corresponding channel and fill it in
+    # telegram:
+    #   bot_token: "your BOT_TOKEN (from @BotFather)"
+    #   chat_id: "your CHAT_ID (from @userinfobot)"
+    # Note: Telegram needs a proxy to be reachable; also uncomment HTTPS_PROXY (and NO_PROXY) in docker-compose.yml
+    # Bark push (iOS): fill the full push URL (with device key and custom params) at the same level as sync_summary
+    # You can append any Bark params in the URL: ?isArchive=1&sound=minuet&icon=https://...&group=icloud
+    # The image only appends /<title>/<body> after it and does not alter your existing params
+    bark:
+      url: "https://nulnul.cn/bark/yourBarkDeviceKey?isArchive=1&sound=minuet&group=icloud&icon=https://www.apple.com/favicon.ico"
+      title: "iCloud Sync"
+
+drive:
+  destination: "drive"
+  # Backup rule: never delete locally even if the server deletes; keep false
+  remove_obsolete: false
+  # Sync interval (seconds); increase to reduce load on Apple's servers
+  sync_interval: 1800
+  # Skip directories/types with no backup value
+  ignore:
+    - "node_modules/*"
+    - ".Trash/*"
+    - "*.tmp"
+  # No filters = sync all of iCloud Drive
+  # filters:
+  #   folders:
+  #     - "Documents"
+  #   file_extensions:
+  #     - "pdf"
+
+photos:
+  destination: "photos"
+  remove_obsolete: false
+  sync_interval: 3600
+  # false = all photos into the all dir; true = keep album structure (same photo in multiple albums stored repeatedly)
+  all_albums: false
+  # When all_albums is true, enable hardlink dedup to save space
+  use_hardlinks: false
+  # Subdir by capture year/month, more intuitive in the filesystem after backup
+  folder_format: "%Y/%m"
+  # filters:
+  #   albums:
+  #     - "album 1"
+  #   file_sizes:
+  #     - "original"
