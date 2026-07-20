@@ -77,3 +77,4 @@ docker exec paseo install.sh go rust java
 | `PASEO_WEB_UI_ENABLED` | Enable Web UI | `true` |
 | `MEM_LIMIT` | Container memory cap | `2g` |
 | `CPU_LIMIT` | Container CPU limit | `2` |
+
