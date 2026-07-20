@@ -81,8 +81,8 @@ jobs:
           tags: |
             ghcr.io/nuln/caddy:${{ needs.version.outputs.version }}${{ matrix.variant.tag_suffix }}
             ${{ matrix.variant.extra_tags }}
-          cache-from: type=registry,ref=ghcr.io/nuln/caddy:cache-${{ matrix.variant.dockerfile }}
-          cache-to: type=registry,ref=ghcr.io/nuln/caddy:cache-${{ matrix.variant.dockerfile }},mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Verify image caddy version matches tag
         if: matrix.variant.verify

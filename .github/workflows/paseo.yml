@@ -67,8 +67,8 @@ jobs:
           tags: |
             ghcr.io/nuln/paseo:latest
             ghcr.io/nuln/paseo:${{ steps.ver.outputs.version }}
-          cache-from: type=registry,ref=ghcr.io/nuln/paseo:cache
-          cache-to: type=registry,ref=ghcr.io/nuln/paseo:cache,mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Verify image builds and starts
         run: |

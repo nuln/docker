@@ -69,8 +69,8 @@ jobs:
           tags: |
             ghcr.io/nuln/opencode:latest
             ghcr.io/nuln/opencode:${{ steps.ver.outputs.version }}
-          cache-from: type=registry,ref=ghcr.io/nuln/opencode:cache
-          cache-to: type=registry,ref=ghcr.io/nuln/opencode:cache,mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       # 2) Verify: pull the just-pushed image and confirm the in-image `opencode --version` matches the tag
       #    (amd64 is enough to verify the version number, avoiding re-pulling all platforms)

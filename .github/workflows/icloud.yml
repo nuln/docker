@@ -62,8 +62,8 @@ jobs:
           tags: |
             ghcr.io/nuln/icloud:latest
             ghcr.io/nuln/icloud:${{ steps.ver.outputs.version }}
-          cache-from: type=registry,ref=ghcr.io/nuln/icloud:cache
-          cache-to: type=registry,ref=ghcr.io/nuln/icloud:cache,mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       # 2) Verify: pull the just-pushed image and confirm the version label matches the tag
       #    (amd64 is enough to verify the version number, avoiding re-pulling all platforms)
