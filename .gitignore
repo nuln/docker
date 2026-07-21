@@ -4,3 +4,6 @@
 
 # 各子项目的运行时数据/工作区/密钥由各自目录的 .gitignore 处理
 # （opencode/data、caddy/data、icloud/data 等）
+
+# 构建环境的临时目录
+buildenv_*/

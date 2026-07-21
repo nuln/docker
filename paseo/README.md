@@ -78,3 +78,60 @@ docker exec paseo install.sh go rust java
 | `MEM_LIMIT` | Container memory cap | `2g` |
 | `CPU_LIMIT` | Container CPU limit | `2` |
 
+## Relay（自建中继）
+
+Paseo 官方推荐使用中继连接移动端 App，所有流量端到端加密（Curve25519 ECDH + XSalsa20-Poly1305）。
+
+`relay/` 目录提供自建中继的配置模板，基于 [paseo-relay](https://github.com/zenghongtu/paseo-relay)（轻量 Go 中继服务）。
+
+### 启动中继
+
+```bash
+cd paseo/relay
+cp .env.sample .env
+docker compose up -d
+```
+
+中继监听 `0.0.0.0:8411`。
+
+### 配置 Caddy 反代（公网访问）
+
+编辑 `relay/Caddyfile`，将 `relay.example.com` 替换为你的域名，然后部署 Caddy：
+
+```bash
+caddy run --config relay/Caddyfile
+```
+
+### 配置 Paseo daemon 连接自建中继
+
+将 `relay/config.json` 复制到 paseo 容器的 `~/.paseo/config.json`（即挂载的 `./data/home/.paseo/config.json`），修改 `endpoint` 和 `publicEndpoint` 为你的中继地址：
+
+```json
+{
+  "daemon": {
+    "relay": {
+      "enabled": true,
+      "endpoint": "relay.example.com:443",
+      "publicEndpoint": "relay.example.com:443"
+    }
+  }
+}
+```
+
+然后重启 paseo 容器：
+
+```bash
+docker compose restart paseo
+```
+
+验证中继连接成功（容器日志中出现 `relay_control_connected` 即表示连接成功）。
+
+### 访问方式总结
+
+| 方式 | 适用场景 | 配置要点 |
+|------|---------|---------|
+| 局域网直连 | 同一 Wi-Fi | 客户端添加 `http://<宿主机IP>:6767` |
+| Tailscale VPN | 多设备私网 | daemon 绑定 Tailscale IP，客户端用该 IP 连接 |
+| 自建中继 | 手机 App 远程访问（推荐） | 启动 relay + Caddy，daemon 配置 relay endpoint |
+| 公网反代 | 浏览器远程访问 | Caddy 反代 paseo:6767，设 `PASEO_HOSTNAMES` |
+

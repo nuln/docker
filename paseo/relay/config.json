@@ -1,0 +1,13 @@
+{
+  "//": "此配置文件用于 Paseo daemon 服务。",
+  "//2": "复制到 paseo 容器 ~/.paseo/config.json（挂载目录 ./data/home/.paseo/config.json），修改 endpoint 后重启",
+  "$schema": "https://paseo.sh/schemas/paseo.config.v1.json",
+  "version": 1,
+  "daemon": {
+    "relay": {
+      "enabled": true,
+      "endpoint": "relay.example.com:443",
+      "publicEndpoint": "relay.example.com:443"
+    }
+  }
+}

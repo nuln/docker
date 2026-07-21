@@ -1,0 +1,59 @@
+name: lunel
+services:
+  manager:
+    build:
+      context: .
+    image: ghcr.io/nuln/lunel:latest
+    container_name: lunel-manager
+
+    command: ["lunel-manager"]
+    ports:
+      - "8899:8899"
+
+    volumes:
+      - ./data/manager:/data
+
+    environment:
+      - PORT=8899
+      - MANAGER_ADMIN_PASSWORD=${MANAGER_ADMIN_PASSWORD}
+      - MANAGER_ALLOW_LEGACY_ADMIN_PASSWORD=1
+      - PROXIES=${PROXIES}
+      - PROXY_PASSWORD=${PROXY_PASSWORD}
+      - MANAGER_DB_PATH=/data/manager.db
+
+    mem_limit: ${MEM_LIMIT:-1g}
+    cpus: ${CPU_LIMIT:-1}
+
+    restart: unless-stopped
+    networks:
+      - lunel-internal
+
+  proxy:
+    build:
+      context: .
+    image: ghcr.io/nuln/lunel:latest
+    container_name: lunel-proxy
+
+    command: ["lunel-proxy"]
+    ports:
+      - "3000:3000"
+
+    environment:
+      - PORT=3000
+      - MANAGER_URL=${MANAGER_URL}
+      - PUBLIC_URL=${PUBLIC_URL}
+      - PROXY_PASSWORD=${PROXY_PASSWORD}
+      - ENFORCE_MANAGER_AUTHORITY=${ENFORCE_MANAGER_AUTHORITY:-1}
+
+    mem_limit: ${MEM_LIMIT:-1g}
+    cpus: ${CPU_LIMIT:-1}
+
+    depends_on:
+      - manager
+    restart: unless-stopped
+    networks:
+      - lunel-internal
+
+networks:
+  lunel-internal:
+    driver: bridge

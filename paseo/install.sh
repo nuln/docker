@@ -284,9 +284,7 @@ install_kotlin() {
 link_npm_bins() {
   local dir="$1"
   mkdir -p "$dir/bin"
-  for pkg_dir in "$dir/node_modules/"*/; do
-    local pkg_json="$pkg_dir/package.json"
-    [ -f "$pkg_json" ] || continue
+  find "$dir/node_modules" -maxdepth 3 -name package.json ! -path '*/node_modules/.package-lock.json' | while read -r pkg_json; do
     local bins
     bins=$(node -e "
       const p = require('$pkg_json');
@@ -295,6 +293,9 @@ link_npm_bins() {
       if (typeof b === 'string') console.log(Object.keys(p.bin || {'dummy':1})[0] + '|' + b);
       else Object.entries(b).forEach(([k,v]) => console.log(k + '|' + v));
     " 2>/dev/null) || continue
+    [ -z "$bins" ] && continue
+    local pkg_dir
+    pkg_dir="$(dirname "$pkg_json")"
     echo "$bins" | while IFS='|' read -r name relpath; do
       [ -z "$name" ] && continue
       local src="$pkg_dir/$relpath"
@@ -309,7 +310,7 @@ link_npm_bins() {
 # ---- Agent CLI: Claude Code ----
 install_claude_code() {
   local dir="$CACHE/claude-code"
-  local bin="$dir/bin/claude-code"
+  local bin="$dir/bin/claude"
   if [ "$FORCE" -eq 0 ] && [ -x "$bin" ]; then
     log "Claude Code already installed (skip)"
   else
@@ -364,7 +365,7 @@ install_opencode() {
 }
 
 setup_shell_source() {
-  local snippet='for __f in /home/paseo/cache/*/env.sh; do [ -r "$__f" ] && . "$__f"; done'
+  local snippet='for __f in ${PASEO_CACHE:-/home/paseo/cache}/*/env.sh; do [ -r "$__f" ] && . "$__f"; done'
   local rc="$HOME/.profile"
   touch "$rc" 2>/dev/null || return 0
   grep -q 'cache/\*/env.sh' "$rc" 2>/dev/null && return 0

@@ -110,6 +110,47 @@ To protect more subpaths, copy the `@protected` matcher and change `path`. For w
 3. Change `Caddyfile`'s `base_auth_url` / `metadata_url` to your PocketID address, `cookie domain` to your main domain.
 4. `docker compose up -d`, visiting a protected path redirects to PocketID login.
 
+## 推荐的额外插件
+
+以下插件建议在后续版本中添加，按优先级排列：
+
+| 优先级 | 插件 | 下载量 | 用途 |
+|--------|------|--------|------|
+| ⭐⭐⭐ | `github.com/corazawaf/coraza-caddy/v2` | 6.5K⬇ | Coraza WAF，集成 OWASP CRS 核心规则集，抵御 SQL 注入/XSS 等攻击 |
+| ⭐⭐⭐ | `github.com/hslatman/caddy-crowdsec-bouncer` | 13K⬇ | CrowdSec 联动封禁，基于社区威胁情报自动阻断恶意 IP（支持 L4+L7） |
+| ⭐⭐⭐ | `github.com/WeidiDeng/caddy-cloudflare-ip` | 13.5K⬇ | 获取 Cloudflare 真实访客 IP（如果网站通过 CF CDN 回源） |
+| ⭐⭐ | `github.com/porech/caddy-maxmind-geolocation` | 12.5K⬇ | GeoIP 地理匹配，按国家/城市/ASN 进行访问控制 |
+| ⭐⭐ | `github.com/darkweak/souin/plugins/caddy` | 23.5K⬇ | 企业级 HTTP 缓存，支持 Redis 等分布式后端，替代 cache-handler |
+| ⭐⭐ | `github.com/caddyserver/replace-response` | 118K⬇ | 响应体内容替换/修改，可用于动态修改 HTML/JSON 响应 |
+| ⭐⭐ | `github.com/ueffel/caddy-brotli` | 8.8K⬇ | Brotli 压缩，比 gzip 提升约 20% 压缩率 |
+| ⭐⭐ | `github.com/ggicci/caddy-jwt` | 3.7K⬇ | JWT 认证，适用于 API 鉴权（轻量替代 caddy-security） |
+| ⭐ | `github.com/kirsch33/realip` | 6.4K⬇ | 从可信代理头提取真实客户端 IP |
+| ⭐ | `github.com/lucaslorentz/caddy-docker-proxy/v2` | 2.1K⬇ | Docker 自动配置，label 驱动（适合 Docker Swarm 环境） |
+| ⭐ | `github.com/mholt/caddy-webdav` | 40K⬇ | WebDAV 文件服务器 |
+
+### 按场景推荐组合
+
+**安全增强**：coraza-waf + crowdsec-bouncer + maxmind-geolocation  
+**性能优化**：souin-cache + brotli + replace-response  
+**Cloudflare 用户**：cloudflare-ip + caddy-dns/cloudflare
+
+## 插件文档更新
+
+`plugins.md` 包含 Caddy 插件市场全部 312 个插件的完整信息，可通过脚本定时更新：
+
+```bash
+# 手动更新
+python3 scripts/update-plugins.py
+
+# 更新并提交
+python3 scripts/update-plugins.py --commit
+
+# 更新、提交并推送
+python3 scripts/update-plugins.py --push
+```
+
+建议在 CI 中定期运行（例如每周一次）或在需要查阅最新插件时手动运行。
+
 ## Notes
 
 - Config uses `Caddyfile` (`caddy run --config /etc/caddy/Caddyfile`). layer4 uses the global `layer4 { }` block; the HTTP part uses Caddyfile directives only, no JSON needed.

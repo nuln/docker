@@ -1,0 +1,5 @@
+# 将 relay.example.com 替换为你的实际域名
+# 部署后，paseo daemon config.json 中的 endpoint 指向此域名
+relay.example.com {
+  reverse_proxy 127.0.0.1:8411
+}

@@ -1,0 +1,14 @@
+# 将 relay.example.com 替换为你的实际域名
+# Proxy 启动时 PUBLIC_URL 需与此处域名/路径一致
+#
+# 独立域名部署：
+# relay.example.com {
+#   reverse_proxy 127.0.0.1:3000
+# }
+
+# 二级目录部署（handle_path 自动剥掉 /lunel 前缀）：
+relay.example.com {
+  handle_path /lunel/* {
+    reverse_proxy 127.0.0.1:3000
+  }
+}

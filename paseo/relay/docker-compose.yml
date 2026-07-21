@@ -1,0 +1,11 @@
+name: paseo-relay
+services:
+  relay:
+    image: ghcr.io/zenghongtu/paseo-relay:latest
+    container_name: paseo-relay
+    restart: unless-stopped
+    ports:
+      - "${RELAY_PORT:-8411}:8411"
+    environment:
+      - LOG_FORMAT=${RELAY_LOG_FORMAT:-json}
+      - RELAY_ADDR=${RELAY_ADDR:-:8411}
