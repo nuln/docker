@@ -1,5 +1,0 @@
-{
-  "//": "此配置仅供参考。CLI/App 不自持中继地址配置，Proxy 地址由 Manager API 分配。",
-  "//2": "如需让 CLI/App 使用自建中继，需将自建 Proxy 的 PUBLIC_URL 注册到 Manager（通过 PROXIES 环境变量或 WebSocket 注册）",
-  "///": "Manager 收到 /v2/proxy 请求后返回 proxyUrl，CLI/App 自动拼接 /v2/ws/{role}"
-}

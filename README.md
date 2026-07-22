@@ -10,7 +10,6 @@ A unified Docker image build repository containing multiple **self-contained sub
 | `caddy/` | `ghcr.io/nuln/caddy` | Custom Caddy (with caddy-l4 plugin), reverse proxy / static site / UDP forwarding |
 | `icloud/` | `ghcr.io/nuln/icloud` | Encrypted-credential iCloud backup (based on mandarons/icloud-docker) |
 | `paseo/` | `ghcr.io/nuln/paseo` | Paseo AI coding agent orchestration platform + on-demand Agent CLIs & language runtimes |
-| `lunel/` | `ghcr.io/nuln/lunel` | Lunel AI-powered mobile IDE relay (Proxy + Manager) + on-demand Agent CLIs & language runtimes |
 
 Each sub-project directory has its own documentation describing config, usage, and development notes.
 
