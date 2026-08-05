@@ -205,6 +205,16 @@ jobs:
           COUNT="$(grep -c '^  /home/pi/.pi-plugins/' /tmp/pilist.txt || true)"
           [ "$COUNT" -ge 14 ] || { echo "FAIL: pi resolved only $COUNT baked dirs"; exit 1; }
           echo "PASS: pi resolved $COUNT baked plugin dirs"
+          echo "== [4] every plugin extension resolves (per-plugin check) =="
+          FAIL=0
+          while IFS= read -r p; do
+            jq -e '.pi.extensions' "$p/package.json" >/dev/null 2>&1 || { echo "WARN: no pi.extensions declared in $p"; continue; }
+            while IFS= read -r f; do
+              [ -e "$p/$f" ] || { echo "FAIL: missing extension '$f' in $p"; FAIL=1; }
+            done < <(jq -r '.pi.extensions[]' "$p/package.json")
+          done < <(jq -r '.packages[]' "$AGENT/settings.json")
+          [ "$FAIL" -eq 0 ] || { echo "FAIL: one or more plugin extensions missing"; exit 1; }
+          echo "PASS: every plugin extension resolves"
           echo "ALL PLUGIN CHECKS OK"
           SCRIPT
           docker exec pi-it bash /tmp/verify-plugins.sh
