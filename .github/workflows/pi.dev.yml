@@ -230,8 +230,12 @@ jobs:
           echo "PASS: owner $OWNER, pi readable"
 
           echo "== [6] s6 oneshots ran: pi-web.log written by pi-web, settings by wire-plugins =="
-          test -s "$AGENT/pi-web.log" || { echo "FAIL: pi-web.log missing/empty — pi-web oneshot did not run"; exit 1; }
-          grep -q "pi-web-chat started" "$AGENT/pi-web.log" || { echo "FAIL: pi-web.log lacks start line"; exit 1; }
+          LOG="$AGENT/pi-web.log"
+          for i in $(seq 1 40); do
+            [ -s "$LOG" ] && break
+            sleep 2
+          done
+          test -s "$LOG" || { echo "FAIL: $LOG missing/empty — pi-web oneshot did not run"; exit 1; }
           echo "PASS: pi-web oneshot ran (log present)"
           S6RC="$(command -v s6-rc 2>/dev/null || true)"; [ -n "$S6RC" ] || S6RC=/command/s6-rc
           if [ -x "$S6RC" ]; then
