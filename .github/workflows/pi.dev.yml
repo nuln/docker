@@ -122,7 +122,7 @@ jobs:
       - name: Run install.sh and verify (${{ matrix.tools }})
         run: |
           docker run --rm --entrypoint bash \
-            -v "$PWD/pi.dev/.github/scripts/verify-toolchain.sh:/verify-toolchain.sh:ro" \
+            -v "$PWD/.github/scripts/verify-toolchain.sh:/verify-toolchain.sh:ro" \
             ${{ needs.build.outputs.image }} \
             /verify-toolchain.sh ${{ matrix.tools }}
 
@@ -148,7 +148,7 @@ jobs:
           chmod 777 "$TMP"
           IMG="${{ needs.build.outputs.image }}"
           docker run -d --name pi-it -v "$TMP:/home/pi/.pi" \
-            -v "$PWD/pi.dev/.github/scripts/verify-plugins.sh:/verify-plugins.sh:ro" \
+            -v "$PWD/.github/scripts/verify-plugins.sh:/verify-plugins.sh:ro" \
             "$IMG" bash -c 'sleep 60'
           sleep 8
           for i in $(seq 1 30); do
@@ -173,13 +173,13 @@ jobs:
           chmod 777 "$TMP"
           IMG="${{ needs.build.outputs.image }}"
           docker run -d --name pi-it1 -v "$TMP:/home/pi/.pi" \
-            -v "$PWD/pi.dev/.github/scripts/verify-plugins.sh:/verify-plugins.sh:ro" \
+            -v "$PWD/.github/scripts/verify-plugins.sh:/verify-plugins.sh:ro" \
             "$IMG" bash -c 'sleep 20'
           sleep 10
           docker exec pi-it1 /verify-plugins.sh && echo "BOOT1 WIRED OK"
           docker rm -f pi-it1 >/dev/null
           docker run -d --name pi-it2 -v "$TMP:/home/pi/.pi" \
-            -v "$PWD/pi.dev/.github/scripts/verify-plugins.sh:/verify-plugins.sh:ro" \
+            -v "$PWD/.github/scripts/verify-plugins.sh:/verify-plugins.sh:ro" \
             "$IMG" bash -c 'sleep 20'
           sleep 10
           docker exec pi-it2 /verify-plugins.sh && echo "BOOT2 PERSIST OK"
