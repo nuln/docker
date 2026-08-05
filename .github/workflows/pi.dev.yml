@@ -88,7 +88,8 @@ jobs:
           docker run --rm --entrypoint bash ${{ env.IMAGE }} -c 'pi --version'
           docker run --rm --entrypoint bash ${{ env.IMAGE }} -c 'jq -e '\''.packages | all(startswith("/home/pi/.pi-plugins/"))'\'' /home/pi/.pi-plugins/settings.json >/dev/null && echo "baked plugins absolute paths ok"'
 
-  # Verify each on-demand toolchain installs and runs from a fresh bash -c (BASH_ENV path)
+  # Verify each on-demand toolchain installs and runs from a fresh bash -c (BASH_ENV path).
+  # The verifier is written to the container at run time (no script files in the repo).
   toolchain:
     name: Verify ${{ matrix.name }}
     needs: build
@@ -122,9 +123,36 @@ jobs:
       - name: Run install.sh and verify (${{ matrix.tools }})
         run: |
           docker run --rm --entrypoint bash \
-            -v "$PWD/.github/scripts/verify-toolchain.sh:/verify-toolchain.sh:ro" \
-            ${{ needs.build.outputs.image }} \
-            /verify-toolchain.sh ${{ matrix.tools }}
+            ${{ needs.build.outputs.image }} bash -s ${{ matrix.tools }} <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          for t in "$@"; do
+            echo "== installing $t =="
+            install.sh "$t"
+          done
+          check() {
+            local bin="$1"; shift
+            echo "== check $bin =="
+            bash -c "command -v $bin" >/dev/null || { echo "FAIL: $bin not on PATH in bash -c (BASH_ENV not loading?)"; return 1; }
+            bash -c "$bin $*" 2>&1 | head -2 || true
+            echo "PASS: $bin"
+          }
+          for t in "$@"; do
+            case "$t" in
+              go)         check go version ;;
+              rust)       check rustc --version; check cargo --version ;;
+              java)       check java -version ;;
+              bun)        check bun --version ;;
+              scala)      check scala-cli version ;;
+              kotlin)     check kotlin -version ;;
+              node-tools) check tsc --version ;;
+              lua)        check lua -v ;;
+              php)        check php -v ;;
+              *)          echo "WARN: no assertion defined for $t" ;;
+            esac
+          done
+          echo "ALL TOOLCHAINS OK: $*"
+          SCRIPT
 
   # First-boot integration test: the s6 /init must run the user bundle (wire the baked
   # plugin store into the mounted agent dir via absolute-path settings.json, auto-start the
@@ -147,15 +175,39 @@ jobs:
           TMP="$(mktemp -d)"
           chmod 777 "$TMP"
           IMG="${{ needs.build.outputs.image }}"
-          docker run -d --name pi-it -v "$TMP:/home/pi/.pi" \
-            -v "$PWD/.github/scripts/verify-plugins.sh:/verify-plugins.sh:ro" \
-            "$IMG" bash -c 'sleep 60'
+          docker run -d --name pi-it -v "$TMP:/home/pi/.pi" "$IMG" bash -c 'sleep 60'
           sleep 8
           for i in $(seq 1 30); do
             docker exec pi-it test -e /home/pi/.pi/agent/settings.json && break
             sleep 2
           done
-          docker exec pi-it /verify-plugins.sh
+          # write the verifier into the container at run time, then execute it
+          docker exec -i pi-it bash -c 'cat > /tmp/verify-plugins.sh' <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          AGENT=/home/pi/.pi/agent
+          echo "== [1] settings.json wired by wire-plugins =="
+          test -e "$AGENT/settings.json" || { echo "FAIL: $AGENT/settings.json missing"; exit 1; }
+          echo "PASS: $AGENT/settings.json exists"
+          echo "== [2] all packages are absolute paths into the baked store (no copy) =="
+          COUNT="$(jq '.packages | length' "$AGENT/settings.json")"
+          [ "$COUNT" -ge 14 ] || { echo "FAIL: only $COUNT packages"; exit 1; }
+          while IFS= read -r p; do
+              case "$p" in
+                /home/pi/.pi-plugins/*) ;;
+                *) echo "FAIL: not a baked path: $p"; exit 1 ;;
+              esac
+              [ -d "$p" ] || { echo "FAIL: missing baked dir: $p"; exit 1; }
+          done < <(jq -r '.packages[]' "$AGENT/settings.json")
+          echo "PASS: $COUNT packages -> absolute paths, all dirs exist"
+          echo "== [3] pi list resolves the baked local packages =="
+          PI_CODING_AGENT_DIR="$AGENT" pi list >/tmp/pilist.txt 2>&1
+          COUNT="$(grep -c '^  /home/pi/.pi-plugins/' /tmp/pilist.txt || true)"
+          [ "$COUNT" -ge 14 ] || { echo "FAIL: pi resolved only $COUNT baked dirs"; exit 1; }
+          echo "PASS: pi resolved $COUNT baked plugin dirs"
+          echo "ALL PLUGIN CHECKS OK"
+          SCRIPT
+          docker exec pi-it bash /tmp/verify-plugins.sh
           CODE=""
           for i in $(seq 1 15); do
             CODE="$(docker exec pi-it bash -c 'curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3141' 2>/dev/null || true)"
@@ -172,15 +224,61 @@ jobs:
           TMP="$(mktemp -d)"
           chmod 777 "$TMP"
           IMG="${{ needs.build.outputs.image }}"
-          docker run -d --name pi-it1 -v "$TMP:/home/pi/.pi" \
-            -v "$PWD/.github/scripts/verify-plugins.sh:/verify-plugins.sh:ro" \
-            "$IMG" bash -c 'sleep 20'
+          docker run -d --name pi-it1 -v "$TMP:/home/pi/.pi" "$IMG" bash -c 'sleep 20'
           sleep 10
-          docker exec pi-it1 /verify-plugins.sh && echo "BOOT1 WIRED OK"
+          docker exec -i pi-it1 bash -c 'cat > /tmp/verify-plugins.sh' <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          AGENT=/home/pi/.pi/agent
+          echo "== [1] settings.json wired by wire-plugins =="
+          test -e "$AGENT/settings.json" || { echo "FAIL: $AGENT/settings.json missing"; exit 1; }
+          echo "PASS: $AGENT/settings.json exists"
+          echo "== [2] all packages are absolute paths into the baked store (no copy) =="
+          COUNT="$(jq '.packages | length' "$AGENT/settings.json")"
+          [ "$COUNT" -ge 14 ] || { echo "FAIL: only $COUNT packages"; exit 1; }
+          while IFS= read -r p; do
+              case "$p" in
+                /home/pi/.pi-plugins/*) ;;
+                *) echo "FAIL: not a baked path: $p"; exit 1 ;;
+              esac
+              [ -d "$p" ] || { echo "FAIL: missing baked dir: $p"; exit 1; }
+          done < <(jq -r '.packages[]' "$AGENT/settings.json")
+          echo "PASS: $COUNT packages -> absolute paths, all dirs exist"
+          echo "== [3] pi list resolves the baked local packages =="
+          PI_CODING_AGENT_DIR="$AGENT" pi list >/tmp/pilist.txt 2>&1
+          COUNT="$(grep -c '^  /home/pi/.pi-plugins/' /tmp/pilist.txt || true)"
+          [ "$COUNT" -ge 14 ] || { echo "FAIL: pi resolved only $COUNT baked dirs"; exit 1; }
+          echo "PASS: pi resolved $COUNT baked plugin dirs"
+          echo "ALL PLUGIN CHECKS OK"
+          SCRIPT
+          docker exec pi-it1 bash /tmp/verify-plugins.sh && echo "BOOT1 WIRED OK"
           docker rm -f pi-it1 >/dev/null
-          docker run -d --name pi-it2 -v "$TMP:/home/pi/.pi" \
-            -v "$PWD/.github/scripts/verify-plugins.sh:/verify-plugins.sh:ro" \
-            "$IMG" bash -c 'sleep 20'
+          docker run -d --name pi-it2 -v "$TMP:/home/pi/.pi" "$IMG" bash -c 'sleep 20'
           sleep 10
-          docker exec pi-it2 /verify-plugins.sh && echo "BOOT2 PERSIST OK"
+          docker exec -i pi-it2 bash -c 'cat > /tmp/verify-plugins.sh' <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          AGENT=/home/pi/.pi/agent
+          echo "== [1] settings.json wired by wire-plugins =="
+          test -e "$AGENT/settings.json" || { echo "FAIL: $AGENT/settings.json missing"; exit 1; }
+          echo "PASS: $AGENT/settings.json exists"
+          echo "== [2] all packages are absolute paths into the baked store (no copy) =="
+          COUNT="$(jq '.packages | length' "$AGENT/settings.json")"
+          [ "$COUNT" -ge 14 ] || { echo "FAIL: only $COUNT packages"; exit 1; }
+          while IFS= read -r p; do
+              case "$p" in
+                /home/pi/.pi-plugins/*) ;;
+                *) echo "FAIL: not a baked path: $p"; exit 1 ;;
+              esac
+              [ -d "$p" ] || { echo "FAIL: missing baked dir: $p"; exit 1; }
+          done < <(jq -r '.packages[]' "$AGENT/settings.json")
+          echo "PASS: $COUNT packages -> absolute paths, all dirs exist"
+          echo "== [3] pi list resolves the baked local packages =="
+          PI_CODING_AGENT_DIR="$AGENT" pi list >/tmp/pilist.txt 2>&1
+          COUNT="$(grep -c '^  /home/pi/.pi-plugins/' /tmp/pilist.txt || true)"
+          [ "$COUNT" -ge 14 ] || { echo "FAIL: pi resolved only $COUNT baked dirs"; exit 1; }
+          echo "PASS: pi resolved $COUNT baked plugin dirs"
+          echo "ALL PLUGIN CHECKS OK"
+          SCRIPT
+          docker exec pi-it2 bash /tmp/verify-plugins.sh && echo "BOOT2 PERSIST OK"
           docker rm -f pi-it2 >/dev/null
