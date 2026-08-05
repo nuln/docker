@@ -175,49 +175,93 @@ jobs:
           TMP="$(mktemp -d)"
           chmod 777 "$TMP"
           IMG="${{ needs.build.outputs.image }}"
+          # write the verifier once on the host; docker cp it into each container (no repo script files)
+          cat > "$RUNNER_TEMP/verify.sh" <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          AGENT=/home/pi/.pi/agent
+          CFG="$AGENT/settings.json"
+
+          echo "== [1] settings.json wired by wire-plugins =="
+          test -e "$CFG" || { echo "FAIL: $CFG missing"; exit 1; }
+          echo "PASS: settings.json exists"
+
+          echo "== [2] absolute baked-store paths, all dirs exist =="
+          COUNT="$(jq '.packages | length' "$CFG")"
+          [ "$COUNT" -ge 14 ] || { echo "FAIL: only $COUNT packages"; exit 1; }
+          while IFS= read -r p; do
+            case "$p" in
+              /home/pi/.pi-plugins/*) ;;
+              *) echo "FAIL: not a baked path: $p"; exit 1 ;;
+            esac
+            [ -d "$p" ] || { echo "FAIL: missing baked dir: $p"; exit 1; }
+          done < <(jq -r '.packages[]' "$CFG")
+          echo "PASS: $COUNT absolute paths, dirs exist"
+
+          echo "== [3] pi list resolves EXACTLY the configured packages =="
+          PI_CODING_AGENT_DIR="$AGENT" pi list >/tmp/pilist.txt 2>&1
+          LIST_COUNT="$(grep -c '^  /home/pi/.pi-plugins/' /tmp/pilist.txt || true)"
+          CFG_COUNT="$(jq '.packages | length' "$CFG")"
+          [ "$LIST_COUNT" -eq "$CFG_COUNT" ] || { echo "FAIL: pi resolved $LIST_COUNT, configured $CFG_COUNT"; exit 1; }
+          echo "PASS: $LIST_COUNT == configured $CFG_COUNT"
+
+          echo "== [4] every plugin manifest entry (extensions/skills/prompts/themes) exists =="
+          FAIL=0
+          while IFS= read -r p; do
+            jq -e '.pi' "$p/package.json" >/dev/null 2>&1 || { echo "FAIL: no pi manifest in $p"; FAIL=1; continue; }
+            for key in extensions skills prompts themes; do
+              while IFS= read -r f; do
+                [ -z "$f" ] && continue
+                [ -e "$p/$f" ] && continue
+                case "$f" in
+                  *"../"*) echo "WARN: $key '$f' in $p points outside pkg (skip)";;
+                  *) echo "FAIL: missing $key '$f' in $p"; FAIL=1;;
+                esac
+              done < <(jq -r ".pi.$key | if type==\"array\" then .[] else . end | select(. != null)" "$p/package.json" 2>/dev/null)
+            done
+          done < <(jq -r '.packages[]' "$CFG")
+          [ "$FAIL" -eq 0 ] || { echo "FAIL: plugin manifest check"; exit 1; }
+          echo "PASS: every plugin manifest resolves"
+
+          echo "== [5] settings.json owned by pi (uid 1000), readable by pi =="
+          OWNER="$(stat -c '%u:%g' "$CFG")"
+          [ "$OWNER" = "1000:1000" ] || { echo "FAIL: owner $OWNER"; exit 1; }
+          su -s /bin/bash pi -c "test -r $CFG" || { echo "FAIL: pi cannot read $CFG"; exit 1; }
+          echo "PASS: owner $OWNER, pi readable"
+
+          echo "== [6] s6 services pi-web + wire-plugins are up =="
+          S6RC="$(command -v s6-rc 2>/dev/null || true)"; [ -n "$S6RC" ] || S6RC=/command/s6-rc
+          if [ -x "$S6RC" ]; then
+            "$S6RC" -l check pi-web >/dev/null 2>&1 || { echo "FAIL: pi-web not up"; exit 1; }
+            "$S6RC" -l check wire-plugins >/dev/null 2>&1 || { echo "FAIL: wire-plugins not up"; exit 1; }
+            echo "PASS: pi-web + wire-plugins up"
+          else
+            echo "WARN: s6-rc unavailable — skipped service-up check"
+          fi
+
+          echo "== [7] base commands usable =="
+          pi --version >/dev/null || { echo "FAIL: pi --version"; exit 1; }
+          install.sh --help >/dev/null 2>&1 || { echo "FAIL: install.sh --help"; exit 1; }
+          echo "PASS: pi + install.sh OK"
+
+          echo "ALL PLUGIN CHECKS OK"
+          SCRIPT
+
           docker run -d --name pi-it -v "$TMP:/home/pi/.pi" "$IMG" bash -c 'sleep 60'
           sleep 8
           for i in $(seq 1 30); do
             docker exec pi-it test -e /home/pi/.pi/agent/settings.json && break
             sleep 2
           done
-          # write the verifier into the container at run time, then execute it
-          docker exec -i pi-it bash -c 'cat > /tmp/verify-plugins.sh' <<'SCRIPT'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          AGENT=/home/pi/.pi/agent
-          echo "== [1] settings.json wired by wire-plugins =="
-          test -e "$AGENT/settings.json" || { echo "FAIL: $AGENT/settings.json missing"; exit 1; }
-          echo "PASS: $AGENT/settings.json exists"
-          echo "== [2] all packages are absolute paths into the baked store (no copy) =="
-          COUNT="$(jq '.packages | length' "$AGENT/settings.json")"
-          [ "$COUNT" -ge 14 ] || { echo "FAIL: only $COUNT packages"; exit 1; }
-          while IFS= read -r p; do
-              case "$p" in
-                /home/pi/.pi-plugins/*) ;;
-                *) echo "FAIL: not a baked path: $p"; exit 1 ;;
-              esac
-              [ -d "$p" ] || { echo "FAIL: missing baked dir: $p"; exit 1; }
-          done < <(jq -r '.packages[]' "$AGENT/settings.json")
-          echo "PASS: $COUNT packages -> absolute paths, all dirs exist"
-          echo "== [3] pi list resolves the baked local packages =="
-          PI_CODING_AGENT_DIR="$AGENT" pi list >/tmp/pilist.txt 2>&1
-          COUNT="$(grep -c '^  /home/pi/.pi-plugins/' /tmp/pilist.txt || true)"
-          [ "$COUNT" -ge 14 ] || { echo "FAIL: pi resolved only $COUNT baked dirs"; exit 1; }
-          echo "PASS: pi resolved $COUNT baked plugin dirs"
-          echo "== [4] every plugin extension resolves (per-plugin check) =="
-          FAIL=0
-          while IFS= read -r p; do
-            jq -e '.pi.extensions' "$p/package.json" >/dev/null 2>&1 || { echo "WARN: no pi.extensions declared in $p"; continue; }
-            while IFS= read -r f; do
-              [ -e "$p/$f" ] || { echo "FAIL: missing extension '$f' in $p"; FAIL=1; }
-            done < <(jq -r '.pi.extensions[]' "$p/package.json")
-          done < <(jq -r '.packages[]' "$AGENT/settings.json")
-          [ "$FAIL" -eq 0 ] || { echo "FAIL: one or more plugin extensions missing"; exit 1; }
-          echo "PASS: every plugin extension resolves"
-          echo "ALL PLUGIN CHECKS OK"
-          SCRIPT
-          docker exec pi-it bash /tmp/verify-plugins.sh
+          docker cp "$RUNNER_TEMP/verify.sh" pi-it:/tmp/verify.sh
+          docker exec pi-it bash /tmp/verify.sh
+
+          # wire-plugins must have run exactly once on this boot
+          GEN_COUNT="$(docker logs pi-it 2>&1 | grep -c 'generated.*baked plugins' || true)"
+          [ "$GEN_COUNT" -eq 1 ] || { echo "FAIL: wire-plugins generated $GEN_COUNT times (expected 1)"; exit 1; }
+          echo "PASS: wire-plugins ran exactly once"
+
+          # Web UI daemon listening on :3141 with a non-empty body
           CODE=""
           for i in $(seq 1 15); do
             CODE="$(docker exec pi-it bash -c 'curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3141' 2>/dev/null || true)"
@@ -226,9 +270,12 @@ jobs:
           done
           echo "web http=$CODE"
           test "$CODE" = "200"
+          BODY="$(docker exec pi-it bash -c 'curl -s http://127.0.0.1:3141' 2>/dev/null || true)"
+          [ -n "$BODY" ] || { echo "FAIL: web returned empty body"; exit 1; }
+          echo "PASS: web body non-empty ($(printf '%s' "$BODY" | wc -c) bytes)"
           docker rm -f pi-it >/dev/null
 
-      - name: Second boot — settings is not re-written (user config preserved)
+      - name: Second boot — user-modified settings is preserved
         run: |
           set -euo pipefail
           TMP="$(mktemp -d)"
@@ -236,59 +283,16 @@ jobs:
           IMG="${{ needs.build.outputs.image }}"
           docker run -d --name pi-it1 -v "$TMP:/home/pi/.pi" "$IMG" bash -c 'sleep 20'
           sleep 10
-          docker exec -i pi-it1 bash -c 'cat > /tmp/verify-plugins.sh' <<'SCRIPT'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          AGENT=/home/pi/.pi/agent
-          echo "== [1] settings.json wired by wire-plugins =="
-          test -e "$AGENT/settings.json" || { echo "FAIL: $AGENT/settings.json missing"; exit 1; }
-          echo "PASS: $AGENT/settings.json exists"
-          echo "== [2] all packages are absolute paths into the baked store (no copy) =="
-          COUNT="$(jq '.packages | length' "$AGENT/settings.json")"
-          [ "$COUNT" -ge 14 ] || { echo "FAIL: only $COUNT packages"; exit 1; }
-          while IFS= read -r p; do
-              case "$p" in
-                /home/pi/.pi-plugins/*) ;;
-                *) echo "FAIL: not a baked path: $p"; exit 1 ;;
-              esac
-              [ -d "$p" ] || { echo "FAIL: missing baked dir: $p"; exit 1; }
-          done < <(jq -r '.packages[]' "$AGENT/settings.json")
-          echo "PASS: $COUNT packages -> absolute paths, all dirs exist"
-          echo "== [3] pi list resolves the baked local packages =="
-          PI_CODING_AGENT_DIR="$AGENT" pi list >/tmp/pilist.txt 2>&1
-          COUNT="$(grep -c '^  /home/pi/.pi-plugins/' /tmp/pilist.txt || true)"
-          [ "$COUNT" -ge 14 ] || { echo "FAIL: pi resolved only $COUNT baked dirs"; exit 1; }
-          echo "PASS: pi resolved $COUNT baked plugin dirs"
-          echo "ALL PLUGIN CHECKS OK"
-          SCRIPT
-          docker exec pi-it1 bash /tmp/verify-plugins.sh && echo "BOOT1 WIRED OK"
+          docker cp "$RUNNER_TEMP/verify.sh" pi-it1:/tmp/verify.sh
+          docker exec pi-it1 bash /tmp/verify.sh && echo "BOOT1 WIRED OK"
+          # user edits settings.json (add a marker) — must survive a restart
+          docker exec pi-it1 bash -c 'jq ". + {userMark:\"keep-me\"}" /home/pi/.pi/agent/settings.json > /tmp/s2.json && mv /tmp/s2.json /home/pi/.pi/agent/settings.json'
           docker rm -f pi-it1 >/dev/null
           docker run -d --name pi-it2 -v "$TMP:/home/pi/.pi" "$IMG" bash -c 'sleep 20'
           sleep 10
-          docker exec -i pi-it2 bash -c 'cat > /tmp/verify-plugins.sh' <<'SCRIPT'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          AGENT=/home/pi/.pi/agent
-          echo "== [1] settings.json wired by wire-plugins =="
-          test -e "$AGENT/settings.json" || { echo "FAIL: $AGENT/settings.json missing"; exit 1; }
-          echo "PASS: $AGENT/settings.json exists"
-          echo "== [2] all packages are absolute paths into the baked store (no copy) =="
-          COUNT="$(jq '.packages | length' "$AGENT/settings.json")"
-          [ "$COUNT" -ge 14 ] || { echo "FAIL: only $COUNT packages"; exit 1; }
-          while IFS= read -r p; do
-              case "$p" in
-                /home/pi/.pi-plugins/*) ;;
-                *) echo "FAIL: not a baked path: $p"; exit 1 ;;
-              esac
-              [ -d "$p" ] || { echo "FAIL: missing baked dir: $p"; exit 1; }
-          done < <(jq -r '.packages[]' "$AGENT/settings.json")
-          echo "PASS: $COUNT packages -> absolute paths, all dirs exist"
-          echo "== [3] pi list resolves the baked local packages =="
-          PI_CODING_AGENT_DIR="$AGENT" pi list >/tmp/pilist.txt 2>&1
-          COUNT="$(grep -c '^  /home/pi/.pi-plugins/' /tmp/pilist.txt || true)"
-          [ "$COUNT" -ge 14 ] || { echo "FAIL: pi resolved only $COUNT baked dirs"; exit 1; }
-          echo "PASS: pi resolved $COUNT baked plugin dirs"
-          echo "ALL PLUGIN CHECKS OK"
-          SCRIPT
-          docker exec pi-it2 bash /tmp/verify-plugins.sh && echo "BOOT2 PERSIST OK"
+          docker cp "$RUNNER_TEMP/verify.sh" pi-it2:/tmp/verify.sh
+          docker exec pi-it2 bash /tmp/verify.sh && echo "BOOT2 PERSIST OK"
+          docker exec pi-it2 bash -c 'jq -e ".userMark == \"keep-me\"" /home/pi/.pi/agent/settings.json >/dev/null' \
+            && echo "PASS: user marker preserved after restart" \
+            || { echo "FAIL: user-modified settings.json was overwritten"; exit 1; }
           docker rm -f pi-it2 >/dev/null
