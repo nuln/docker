@@ -34,7 +34,7 @@ All installed during `docker build`; pi is usable immediately after the containe
 
 ```bash
 # local build (default latest; pin the version with --build-arg PI_VERSION=x.y.z)
-docker build -t pi-dev:latest .
+docker build -t pi.dev:latest .
 ```
 
 ## Usage
@@ -168,7 +168,7 @@ Verified cycle: 1. start -> install go/lua -> `go`/`lua` work in the pi process;
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `TZ` | timezone | `Asia/Shanghai` |
-| `PI_IMAGE` | image name | `pi-dev:latest` |
+| `PI_IMAGE` | image name | `pi.dev:latest` |
 | `CARGO_BUILD_JOBS` | Rust parallel build jobs | `1` |
 | `GOMAXPROCS` | Go parallelism | `2` |
 | `MAKEFLAGS` | make parallelism | `-j2` |

@@ -1,8 +1,8 @@
 name: pi
 services:
   pi:
-    image: ${PI_IMAGE:-pi-dev:latest}
-    container_name: pi-dev
+    image: ${PI_IMAGE:-pi.dev:latest}
+    container_name: pi.dev
 
     # s6-overlay /init is PID 1 (see Dockerfile): on first start the wire-plugins service
     # writes a settings.json into the mounted config dir referencing the baked plugin store
