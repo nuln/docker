@@ -6,10 +6,8 @@ A unified Docker image build repository containing multiple **self-contained sub
 
 | Directory | Image | Description |
 |-----------|-------|-------------|
-| `opencode/` | `ghcr.io/nuln/opencode` | OpenCode AI coding assistant + multi-language runtimes (Python/Go/Rust/TS), low-power optimized |
 | `caddy/` | `ghcr.io/nuln/caddy` | Custom Caddy (with caddy-l4 plugin), reverse proxy / static site / UDP forwarding |
 | `icloud/` | `ghcr.io/nuln/icloud` | Encrypted-credential iCloud backup (based on mandarons/icloud-docker) |
-| `paseo/` | `ghcr.io/nuln/paseo` | Paseo AI coding agent orchestration platform + on-demand Agent CLIs & language runtimes |
 | `pi-dev/` | `ghcr.io/nuln/pi-dev` | Pi coding agent container: Node 24 + s6-overlay, 14 curated plugins baked into the image layer (wire-plugins writes absolute-path settings.json on first boot) + Web UI autostart + on-demand toolchains |
 
 Each sub-project directory has its own documentation describing config, usage, and development notes.
@@ -17,8 +15,8 @@ Each sub-project directory has its own documentation describing config, usage, a
 ## CI rules (important)
 
 - **Workflow location**: only under the repo root `.github/workflows/`; a `.github` directory inside a sub-directory is not scanned/executed by GitHub Actions.
-- **Naming rule**: `<sub-project>.yml` (e.g. `opencode.yml`, `caddy.yml`).
-- **Trigger isolation**: each workflow filters by `paths` (e.g. `opencode/**`) so it only builds when the corresponding sub-project changes, with no interference between them.
+- **Naming rule**: `<sub-project>.yml` (e.g. `caddy.yml`, `pi-dev.yml`).
+- **Trigger isolation**: each workflow filters by `paths` (e.g. `pi-dev/**`) so it only builds when the corresponding sub-project changes, with no interference between them.
 - **Multi-arch**: uniformly `linux/amd64` + `linux/arm64` (`QEMU` + `buildx`).
 - **Push target**: `ghcr.io/nuln/<sub-project>`, tagged `latest` + version.
 - **Auth**: `GITHUB_TOKEN` (no extra secret needed).
