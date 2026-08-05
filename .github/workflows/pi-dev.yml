@@ -1,0 +1,186 @@
+name: pi-dev
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "pi-dev/**"
+      - ".github/workflows/pi-dev.yml"
+  pull_request:
+    paths:
+      - "pi-dev/**"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Pi version to bake (empty = npm latest)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      image: ${{ steps.iv.outputs.image }}
+    steps:
+      - name: Determine Pi version
+        id: ver
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION=$(npm view @earendil-works/pi-coding-agent version 2>/dev/null)
+          fi
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            echo "Failed to fetch @earendil-works/pi-coding-agent version" >&2
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Baking Pi version: ${VERSION}"
+
+  build:
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ghcr.io/nuln/pi-dev:${{ needs.version.outputs.version }}
+    outputs:
+      image: ghcr.io/nuln/pi-dev:${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push pi-dev image (multi-arch)
+        uses: docker/build-push-action@v7
+        with:
+          context: pi-dev
+          file: pi-dev/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: |
+            ghcr.io/nuln/pi-dev:latest
+            ghcr.io/nuln/pi-dev:${{ needs.version.outputs.version }}
+          build-args: |
+            PI_VERSION=${{ needs.version.outputs.version }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.version.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test (amd64 default runner)
+        run: |
+          docker run --rm --entrypoint bash ${{ env.IMAGE }} -c 'pi --version'
+          docker run --rm --entrypoint bash ${{ env.IMAGE }} -c 'jq -e '\''.packages | all(startswith("/home/pi/.pi-plugins/"))'\'' /home/pi/.pi-plugins/settings.json >/dev/null && echo "baked plugins absolute paths ok"'
+
+  # Verify each on-demand toolchain installs and runs from a fresh bash -c (BASH_ENV path)
+  toolchain:
+    name: Verify ${{ matrix.name }}
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: go
+            tools: go
+          - name: rust
+            tools: rust
+          - name: java
+            tools: java
+          - name: bun-node
+            tools: bun node-tools
+          - name: scala
+            tools: scala
+          - name: kotlin
+            tools: kotlin
+          - name: lua-php
+            tools: lua php
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull image
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker pull ${{ needs.build.outputs.image }}
+
+      - name: Run install.sh and verify (${{ matrix.tools }})
+        run: |
+          docker run --rm --entrypoint bash \
+            -v "$PWD/pi-dev/.github/scripts/verify-toolchain.sh:/verify-toolchain.sh:ro" \
+            ${{ needs.build.outputs.image }} \
+            /verify-toolchain.sh ${{ matrix.tools }}
+
+  # First-boot integration test: the s6 /init must run the user bundle (wire the baked
+  # plugin store into the mounted agent dir via absolute-path settings.json, auto-start the
+  # Web UI daemon on :3141) and not re-write settings on the second boot.
+  integration:
+    name: First-boot (s6 wire-plugins + web autostart)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull image
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker pull ${{ needs.build.outputs.image }}
+
+      - name: First boot — wire baked plugins + web autostart
+        run: |
+          set -euo pipefail
+          TMP="$(mktemp -d)"
+          chmod 777 "$TMP"
+          IMG="${{ needs.build.outputs.image }}"
+          docker run -d --name pi-it -v "$TMP:/home/pi/.pi" \
+            -v "$PWD/pi-dev/.github/scripts/verify-plugins.sh:/verify-plugins.sh:ro" \
+            "$IMG" bash -c 'sleep 60'
+          sleep 8
+          for i in $(seq 1 30); do
+            docker exec pi-it test -e /home/pi/.pi/agent/settings.json && break
+            sleep 2
+          done
+          docker exec pi-it /verify-plugins.sh
+          CODE=""
+          for i in $(seq 1 15); do
+            CODE="$(docker exec pi-it bash -c 'curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3141' 2>/dev/null || true)"
+            [ "$CODE" = "200" ] && break
+            sleep 2
+          done
+          echo "web http=$CODE"
+          test "$CODE" = "200"
+          docker rm -f pi-it >/dev/null
+
+      - name: Second boot — settings is not re-written (user config preserved)
+        run: |
+          set -euo pipefail
+          TMP="$(mktemp -d)"
+          chmod 777 "$TMP"
+          IMG="${{ needs.build.outputs.image }}"
+          docker run -d --name pi-it1 -v "$TMP:/home/pi/.pi" \
+            -v "$PWD/pi-dev/.github/scripts/verify-plugins.sh:/verify-plugins.sh:ro" \
+            "$IMG" bash -c 'sleep 20'
+          sleep 10
+          docker exec pi-it1 /verify-plugins.sh && echo "BOOT1 WIRED OK"
+          docker rm -f pi-it1 >/dev/null
+          docker run -d --name pi-it2 -v "$TMP:/home/pi/.pi" \
+            -v "$PWD/pi-dev/.github/scripts/verify-plugins.sh:/verify-plugins.sh:ro" \
+            "$IMG" bash -c 'sleep 20'
+          sleep 10
+          docker exec pi-it2 /verify-plugins.sh && echo "BOOT2 PERSIST OK"
+          docker rm -f pi-it2 >/dev/null

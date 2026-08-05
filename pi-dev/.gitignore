@@ -1,0 +1,9 @@
+# Runtime data (config, sessions, auth, language caches) — never committed
+data
+
+# Environment variables (contains API key secrets — never committed)
+.env
+
+# macOS / editors
+.DS_Store
+.vscode
