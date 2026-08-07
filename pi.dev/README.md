@@ -66,6 +66,24 @@ docker compose up -d
 docker compose exec -it pi pi
 ```
 
+### Add skills (yours + third-party)
+
+Skills are baked into the image at `/etc/s6-overlay/plugins/skills` but are
+**NOT loaded by default**. To enable them, set `PI_SKILLS=true` in `.env` and
+recreate the container; on first boot `wire-plugins` copies them into
+`~/.agents/skills/` (pi's native global skill dir).
+
+1. **Your own / chosen skills** — put a directory with a `SKILL.md` (name +
+   description frontmatter) under
+   `pi.dev/rootfs/etc/s6-overlay/plugins/skills/<skill-name>/`. Rebuild the
+   image. With `PI_SKILLS=true` they load on the next fresh boot.
+
+2. **Third-party skill packages** — add the npm package to
+   `rootfs/etc/s6-overlay/scripts/install.d/plugins.sh` (any array, e.g. `CORE`);
+   `pi install npm:<pkg>` bakes it into the plugin store at build time and pi
+   discovers its `skills/` via the package manifest. Or `docker compose exec pi
+   pi install npm:<pkg>` at runtime.
+
 ### Install programming environments on demand (in-container script)
 
 `install.sh` inside the container, run on demand, independent of each other:

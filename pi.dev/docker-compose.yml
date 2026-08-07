@@ -27,6 +27,20 @@ services:
       - PI_CODING_AGENT_DIR=/home/pi/.pi/agent
       # auto-start the Web UI daemon on container start; set 0 to disable
       - PI_AUTOSTART_WEB=${PI_AUTOSTART_WEB:-1}
+# first-boot permission policy for pi-permission-system. Empty = don't seed
+      # (plugin default). Set to allow|ask|default|deny|hardened to seed that baked
+      # policy. An existing config in the mount always wins.
+      - PI_PERMISSION_SYSTEM_POLICY=${PI_PERMISSION_SYSTEM_POLICY:-}
+      # bake the curated skills (s6-overlay/plugins/skills) into ~/.agents/skills
+      # on first boot. false/empty = skills stay in the image, NOT loaded.
+      - PI_SKILLS=${PI_SKILLS:-false}
+      # --- outbound proxy for the whole container (all tools: curl/go/npm/git/...). ---
+      # Set HTTP_PROXY/HTTPS_PROXY/ALL_PROXY in .env to route egress through them;
+      # NO_PROXY keeps LAN/fnOS hosts on a direct connection. Leave blank to disable.
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - ALL_PROXY=${ALL_PROXY:-}
+      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,::1}
       # conservative resource limits for a weak host (e.g. Intel J3455)
       - CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-1}
       - GOMAXPROCS=${GOMAXPROCS:-2}

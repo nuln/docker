@@ -51,7 +51,44 @@ fi
 
 mkdir -p "$AGENT_DIR"
 
-# Collect every package dir under the store (top-level, plus scoped @scope/name
+# Seed a baked permission policy for pi-permission-system, ONLY when the user
+# opts in via PI_PERMISSION_SYSTEM_POLICY (allow|ask|default|deny|hardened).
+# Empty -> nothing is seeded; the plugin keeps its built-in behaviour. An
+# existing config in the mount ALWAYS wins.
+if [ -n "${PI_PERMISSION_SYSTEM_POLICY:-}" ]; then
+  PERM_EXT="$AGENT_DIR/extensions/pi-permission-system"
+  PERM_CFG="$PERM_EXT/config.json"
+  PERM_POLICY="${PI_PERMISSION_SYSTEM_POLICY}"
+  PERM_SEED="/etc/s6-overlay/plugins/pi-permission-system/policies/${PERM_POLICY}.json"
+  if [ -e "$PERM_CFG" ]; then
+    echo "[s6:wire-plugins] $PERM_CFG exists — existing policy wins, env ignored"
+  elif [ -e "$PERM_SEED" ]; then
+    mkdir -p "$PERM_EXT"
+    cp "$PERM_SEED" "$PERM_CFG"
+    chown "$RUNTIME_UID:$RUNTIME_GID" "$PERM_EXT" "$PERM_CFG" 2>/dev/null || true
+    echo "[s6:wire-plugins] seeded permission policy '$PERM_POLICY' -> $PERM_CFG"
+  else
+    echo "[s6:wire-plugins] no baked policy for PI_PERMISSION_SYSTEM_POLICY='$PERM_POLICY' (try allow|ask|default|deny|hardened)"
+  fi
+fi
+
+# Bake in the curated skills from the image layer (/etc/s6-overlay/plugins/skills)
+# into pi's global skills dir (~/.agents/skills), ONLY when the user opts in via
+# PI_SKILLS=true. Default (false/empty): skills stay in the image, NOT loaded.
+if [ "${PI_SKILLS:-false}" = "true" ]; then
+  SKILL_SRC="/etc/s6-overlay/plugins/skills"
+  SKILL_DST="/home/pi/.agents/skills"
+  if [ -d "$SKILL_SRC" ]; then
+    mkdir -p "$SKILL_DST"
+    cp -a "$SKILL_SRC"/. "$SKILL_DST"/
+    chown -R "$RUNTIME_UID:$RUNTIME_GID" "$SKILL_DST" 2>/dev/null || true
+    echo "[s6:wire-plugins] copied baked skills -> $SKILL_DST ($(find "$SKILL_DST" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ') skills)"
+  else
+    echo "[s6:wire-plugins] PI_SKILLS=true but no baked skills at $SKILL_SRC"
+  fi
+fi
+
+# Collect every package dir under the store (top-level, including scoped @scope/name
 # subdirs). A dir is a plugin iff its package.json declares a `pi` manifest — the
 # same rule pi's settings-manager uses, so this matches what `pi install npm:...`
 # would have recorded. Emit paths one per line; jq builds the JSON.

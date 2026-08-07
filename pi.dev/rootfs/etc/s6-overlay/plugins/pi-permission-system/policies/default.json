@@ -1,0 +1,69 @@
+{
+  "$schema": "https://raw.githubusercontent.com/gotgenes/pi-packages/main/packages/pi-permission-system/schemas/permissions.schema.json",
+  "debugLog": false,
+  "permissionReviewLog": true,
+  "yoloMode": false,
+  "doublePressToConfirm": false,
+  "toolInputPreviewMaxLength": 400,
+  "toolTextSummaryMaxLength": 120,
+  "piInfrastructureReadPaths": [
+    "/root/.pi/agent/**",
+    "/home/pi/.pi/agent/**"
+  ],
+  "authorizerChain": [],
+  "permission": {
+    "*": "allow",
+    "path": {
+      "*": "allow",
+      "*.env": "deny",
+      "*.env.*": "deny",
+      "*.env.example": "allow",
+      "*.key": "deny",
+      "*.pem": "deny",
+      "id_dsa*": "deny",
+      "id_ecdsa*": "deny",
+      "id_ed25519*": "deny",
+      "id_rsa*": "deny",
+      "~/.authinfo": "deny",
+      "~/.cargo/credentials": "deny",
+      "~/.cloudflared/*": "deny",
+      "~/.config/aws/*": "deny",
+      "~/.config/gcloud/*": "deny",
+      "~/.config/gh/*": "deny",
+      "~/.config/git/credentials": "deny",
+      "~/.config/glab-cli/*": "deny",
+      "~/.config/heroku/*": "deny",
+      "~/.config/netlify/*": "deny",
+      "~/.config/oci/*": "deny",
+      "~/.config/pip/pip.conf": "deny",
+      "~/.config/pypoetry/auth.toml": "deny",
+      "~/.config/rclone/rclone.conf": "deny",
+      "~/.config/uv/uv.toml": "deny",
+      "~/.config/vercel/*": "deny",
+      "~/.config/yarn/*": "deny",
+      "~/.docker/config.json": "deny",
+      "~/.gem/credentials": "deny",
+      "~/.git-credentials": "deny",
+      "~/.gitconfig": "deny",
+      "~/.gnupg/*": "deny",
+      "~/.gradle/credentials": "deny",
+      "~/.gradle/gradle.properties": "deny",
+      "~/.kube/*": "deny",
+      "~/.local/share/keyrings/*": "deny",
+      "~/.local/share/password-store/*": "deny",
+      "~/.m2/settings.xml": "deny",
+      "~/.netrc": "deny",
+      "~/.npmrc": "deny",
+      "~/.password-store/*": "deny",
+      "~/.pypirc": "deny",
+      "~/.wrangler/*": "deny",
+      "~/.yarnrc.yml": "deny"
+    },
+    "bash": {
+      "*": "ask"
+    },
+    "external_directory": {
+      "*": "ask"
+    }
+  }
+}
