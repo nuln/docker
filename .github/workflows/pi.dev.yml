@@ -374,7 +374,7 @@ jobs:
           docker exec pi-sk-on bash /tmp/skills_verify.sh
 
           # wire-plugins reported the copy exactly once
-          GEN="$(docker logs pi-sk-on 2>&1 | grep -c 'copied baked skills' || true)"
+          GEN="$(docker logs pi-sk-on 2>&1 | grep -c 'baked skills ->' || true)"
           [ "$GEN" -eq 1 ] || { echo "FAIL: skills copied $GEN times (expected 1)"; exit 1; }
           echo "PASS: skills copied exactly once"
           docker rm -f pi-sk-on >/dev/null
