@@ -86,11 +86,16 @@ docker compose exec pi install.sh java bun scala kotlin
 # Lua / PHP (official source builds, using the image's bundled gcc+make)
 docker compose exec pi install.sh lua php
 
+# DB / storage CLI clients (MySQL, PostgreSQL, Redis, SQLite, MinIO client)
+docker compose exec pi install.sh db-clients
+
 # Update installed Go to latest (--update forces reinstall)
 docker compose exec pi install.sh go --update
 ```
 
-Supported targets: `go` / `rust` / `java` / `bun` / `scala` / `kotlin` / `lua` / `php` / `node-tools` (TypeScript etc.).
+Supported targets: `go` / `rust` / `java` / `bun` / `scala` / `kotlin` / `lua` / `php` / `node-tools` (TypeScript etc.) / `db-clients` (MySQL / PostgreSQL / Redis / SQLite / MinIO `mc`).
+
+> The image also **bakes in** a few base CLI tools: `gh` (GitHub CLI, `gh auth login`) and `wrangler` (Cloudflare Workers/Pages/D1/R2) — usable immediately, no `install.sh` needed.
 
 ### Plugin ecosystem (extend pi's capabilities)
 

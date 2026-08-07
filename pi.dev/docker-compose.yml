@@ -1,66 +1,44 @@
 name: pi
 services:
   pi:
-    image: ${PI_IMAGE:-pi.dev:latest}
+    image: ${PI_IMAGE:-ghcr.io/nuln/pi.dev:latest}
     container_name: pi.dev
 
-    # s6-overlay /init is PID 1 (see Dockerfile): on first start the wire-plugins service
-    # writes a settings.json into the mounted config dir referencing the baked plugin store
-    # (/home/pi/.pi-plugins, in the image layer — never mounted) by absolute path, and the
-    # pi-web service auto-starts the Web UI daemon (PI_AUTOSTART_WEB=1, http://<host>:3141).
-    # CMD runs the pi TUI in the foreground. Common commands:
-    #   docker compose up                    # foreground, straight into pi (interactive)
-    #   docker compose up -d                 # run pi in background (use with the exec below)
-    #   docker compose run --rm pi           # one-shot, into pi
-    #   docker compose exec -it pi pi        # open another pi session inside the running container
-    #   docker compose exec pi install.sh go # install the Go toolchain on demand
-
     ports:
-      # Service ports of pre-installed plugins in this repo (enable only when you need external access;
-      # most services bind 127.0.0.1 by default)
       # Web UI (pi-web-chat, pi --web) — see PLUGINS.md section 16
       - "${PI_WEB_PORT:-3141}:3141"
-      # IM gateway (@gamalan/pi-gateway), only when using gateway; @llblab/pi-telegram uses long polling and needs none
+      # IM gateway (@gamalan/pi-gateway); @llblab/pi-telegram uses long polling and needs none
       - "${PI_GATEWAY_PORT:-3847}:3847"
-      # Feishu/Lark card callback (pi-feishu-lark, FEISHU_CARD_ACTION_WEBHOOK_PORT defaults to 3001)
+      # Feishu/Lark card callback (FEISHU_CARD_ACTION_WEBHOOK_PORT defaults to 3001)
       - "${PI_FEISHU_PORT:-3001}:3001"
-      # remote-pi relay (map when self-hosting, adjust to your custom port)
+      # remote-pi relay (map when self-hosting; adjust to your custom port)
       # - "${PI_RELAY_PORT:-3030}:3030"
 
     volumes:
-      # all pi config/state (~/.pi: sessions, auth, web-chat, remote-pi pairing/relay config,
-      # and plugins the USER installs later). The preinstalled plugin store is NOT here — it is
-      # baked into the image at /home/pi/.pi-plugins and referenced from settings.json by
-      # absolute path. NOTE: if you already used the old ./data/agent mount, migrate once:
-      #   mkdir -p data/pi && mv data/agent data/pi/agent
+      # pi config/state (~/.pi); the preinstalled plugin store stays baked in the image
       - ./data/pi:/home/pi/.pi
-      # on-demand language toolchains (Go/Rust/Java/...), persistent
+      # on-demand language toolchains (Go/Rust/Java/...)
       - ./data/cache:/home/pi/cache
-      # code project working dir (short dir `dev` under the pi user's home; create the dir on the host yourself)
+      # code project working dir
       - ./data/workspace:/home/pi/dev
 
     environment:
       - TZ=${TZ}
-      # default working dir is dev, pi runs directly in this directory
       - PI_CODING_AGENT_DIR=/home/pi/.pi/agent
-      # auto-start the Web UI daemon (pi --web --lan) on container start; set 0 to disable
+      # auto-start the Web UI daemon on container start; set 0 to disable
       - PI_AUTOSTART_WEB=${PI_AUTOSTART_WEB:-1}
-      # --- AI provider API keys are injected via environment variables or auth.json (see README), never in .env ---
-      # --- resource limits for a weak host (conservative defaults for an Intel J3455) ---
-      # cargo parallel build jobs (J3455 default 1; N5105 can use 2)
+      # conservative resource limits for a weak host (e.g. Intel J3455)
       - CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-1}
-      # Go build/run parallelism
       - GOMAXPROCS=${GOMAXPROCS:-2}
-      # make parallelism (C/Python source builds, etc.; J3455 default -j2)
       - MAKEFLAGS=${MAKEFLAGS:--j2}
 
     working_dir: /home/pi/dev
 
-    # allow exec -it (the TUI needs a TTY)
+    # the TUI needs a TTY
     stdin_open: true
     tty: true
 
-    # overall container resource cap, to protect the weak host machine
+    # overall container resource cap
     mem_limit: ${MEM_LIMIT:-4g}
     cpus: ${CPU_LIMIT:-2}
 

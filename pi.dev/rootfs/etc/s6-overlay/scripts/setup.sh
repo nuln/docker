@@ -46,6 +46,20 @@ log "pi CLI + remote-pi CLI"
 npm i -g "@earendil-works/pi-coding-agent@${PI_VERSION}" remote-pi \
     --allow-scripts=@google/genai,protobufjs,remote-pi
 
+log "wrangler CLI (Cloudflare)"
+npm i -g wrangler
+
+log "GitHub CLI (gh)"
+case "${TARGETARCH:-amd64}" in
+  amd64) GH_ARCH=amd64 ;;
+  arm64) GH_ARCH=arm64 ;;
+  *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;;
+esac
+GH_VER="$(curl -fsSL "https://api.github.com/repos/cli/cli/releases/latest" | jq -r .tag_name)"
+curl -fsSL "https://github.com/cli/cli/releases/download/${GH_VER}/gh_${GH_VER#v}_linux_${GH_ARCH}.tar.gz" -o /tmp/gh.tar.gz
+tar -C /usr/local -xzf /tmp/gh.tar.gz --strip-components=1 "gh_${GH_VER#v}_linux_${GH_ARCH}/bin/gh"
+rm -f /tmp/gh.tar.gz
+
 log "user pi"
 useradd -m -u 1000 -s /bin/bash pi
 mkdir -p /home/pi/.pi/agent /home/pi/cache /home/pi/dev
