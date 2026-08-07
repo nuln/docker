@@ -378,3 +378,73 @@ jobs:
           [ "$GEN" -eq 1 ] || { echo "FAIL: skills copied $GEN times (expected 1)"; exit 1; }
           echo "PASS: skills copied exactly once"
           docker rm -f pi-sk-on >/dev/null
+
+      - name: PI_SKILLS whitelist — only requested skills copied
+        run: |
+          set -euo pipefail
+          IMG="${{ needs.build.outputs.image }}"
+          TMP="$(mktemp -d)"; chmod 777 "$TMP"
+          docker run -d --name pi-sk-wl -e PI_SKILLS=tdd,browser,no-such-skill \
+            -v "$TMP:/home/pi/.pi" "$IMG" bash -c 'sleep 45'
+          for i in $(seq 1 30); do
+            docker exec pi-sk-wl test -d /home/pi/.agents/skills && break
+            sleep 2
+          done
+          docker exec pi-sk-wl test -d /home/pi/.agents/skills || { echo "FAIL: ~/.agents/skills missing"; exit 1; }
+          COUNT="$(docker exec pi-sk-wl sh -c 'ls -d /home/pi/.agents/skills/*/ | wc -l' | tr -d ' ')"
+          [ "$COUNT" -eq 2 ] || { echo "FAIL: expected 2 skills loaded (tdd,browser), got $COUNT"; docker exec pi-sk-wl ls /home/pi/.agents/skills; exit 1; }
+          docker exec pi-sk-wl test -d /home/pi/.agents/skills/tdd || { echo "FAIL: tdd missing"; exit 1; }
+          docker exec pi-sk-wl test -d /home/pi/.agents/skills/browser || { echo "FAIL: browser missing"; exit 1; }
+          docker exec pi-sk-wl test -d /home/pi/.agents/skills/research && { echo "FAIL: research loaded though not whitelisted"; exit 1; }
+          echo "PASS: whitelist loaded tdd+browser only, unknown name skipped"
+          docker rm -f pi-sk-wl >/dev/null
+
+  # Scaffold + healthcheck: new-project bakes templates with {{ PROJECT }}
+  # placeholders, and the image HEALTHCHECK must report healthy once the web UI
+  # autostart is up.
+  scaffold:
+    name: Scaffold + healthcheck
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Pull image
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker pull ${{ needs.build.outputs.image }}
+
+      - name: new-project scaffolds templates (placeholder substitution)
+        run: |
+          set -euo pipefail
+          IMG="${{ needs.build.outputs.image }}"
+          TMP="$(mktemp -d)"; chmod 777 "$TMP"
+          docker run -d --name pi-scaf -v "$TMP:/home/pi/dev" "$IMG" bash -c 'sleep 60'
+          sleep 8
+          docker exec pi-scaf new-project --list
+          docker exec pi-scaf new-project go-api my-api >/tmp/scaf.out 2>&1 || { cat /tmp/scaf.out; exit 1; }
+          docker exec pi-scaf test -f /home/pi/dev/my-api/main.go || { echo "FAIL: main.go missing"; exit 1; }
+          docker exec pi-scaf grep -q '"my-api"' /home/pi/dev/my-api/main.go || { echo "FAIL: {{ PROJECT }} not substituted"; exit 1; }
+          docker exec pi-scaf new-project cloudflare-worker cf-app >/tmp/scaf2.out 2>&1 || { cat /tmp/scaf2.out; exit 1; }
+          docker exec pi-scaf test -f /home/pi/dev/cf-app/wrangler.jsonc || { echo "FAIL: wrangler.jsonc missing"; exit 1; }
+          docker exec pi-scaf grep -q 'name = "cf-app"' /home/pi/dev/cf-app/wrangler.jsonc || { echo "FAIL: wrangler placeholder not substituted"; exit 1; }
+          docker exec pi-scaf test -f /home/pi/dev/cf-app/README.md || { echo "FAIL: README.md.tpl suffix not stripped"; exit 1; }
+          docker exec pi-scaf new-project no-such-template >/tmp/scaf3.out 2>&1 && { echo "FAIL: unknown template should error"; exit 1; }
+          echo "PASS: new-project scaffolds go-api + cloudflare-worker, placeholders + .tpl stripped"
+          docker rm -f pi-scaf >/dev/null
+
+      - name: HEALTHCHECK present + healthy with web autostart
+        run: |
+          set -euo pipefail
+          IMG="${{ needs.build.outputs.image }}"
+          TMP="$(mktemp -d)"; chmod 777 "$TMP"
+          docker run -d --name pi-hc -v "$TMP:/home/pi/.pi" "$IMG" bash -c 'sleep 120'
+          for i in $(seq 1 40); do
+            ST="$(docker inspect -f '{{.State.Health.Status}}' pi-hc 2>/dev/null || echo starting)"
+            [ "$ST" = "healthy" ] && break
+            sleep 3
+          done
+          echo "health status: $ST"
+          [ "$ST" = "healthy" ] || { echo "FAIL: healthcheck not healthy"; docker logs pi-hc 2>&1 | tail -20; exit 1; }
+          echo "PASS: HEALTHCHECK reports healthy"
+          docker rm -f pi-hc >/dev/null

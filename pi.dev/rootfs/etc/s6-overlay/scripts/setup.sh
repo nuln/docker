@@ -71,6 +71,7 @@ chown -R pi:pi /home/pi
 log "PATH symlinks"
 ln -sf /etc/s6-overlay/scripts/install.sh /usr/local/bin/install.sh
 ln -sf /etc/s6-overlay/scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
+ln -sf /etc/s6-overlay/scripts/new-project.sh /usr/local/bin/new-project
 
 log "BASH_ENV bootstrap"
 /usr/local/bin/install.sh setup-bash-env

@@ -72,19 +72,37 @@ if [ -n "${PI_PERMISSION_SYSTEM_POLICY:-}" ]; then
   fi
 fi
 
-# Bake in the curated skills from the image layer (/etc/s6-overlay/plugins/skills)
-# into pi's global skills dir (~/.agents/skills), ONLY when the user opts in via
-# PI_SKILLS=true. Default (false/empty): skills stay in the image, NOT loaded.
-if [ "${PI_SKILLS:-false}" = "true" ]; then
+# Bake in curated skills from the image (/etc/s6-overlay/plugins/skills) into
+# pi's global skills dir (~/.agents/skills) on first boot.
+#   PI_SKILLS=true            -> copy ALL baked skills
+#   PI_SKILLS=a,b,c           -> copy only those (whitelist), unknown names are
+#                                skipped with a notice
+#   PI_SKILLS=false|empty     -> skills stay in the image, NOT loaded (default)
+if [ "${PI_SKILLS:-false}" != "false" ] && [ -n "${PI_SKILLS:-}" ]; then
   SKILL_SRC="/etc/s6-overlay/plugins/skills"
   SKILL_DST="/home/pi/.agents/skills"
   if [ -d "$SKILL_SRC" ]; then
     mkdir -p "$SKILL_DST"
-    cp -a "$SKILL_SRC"/. "$SKILL_DST"/
+    if [ "${PI_SKILLS}" = "true" ]; then
+      cp -a "$SKILL_SRC"/. "$SKILL_DST"/
+      echo "[s6:wire-plugins] copied ALL baked skills -> $SKILL_DST ($(find "$SKILL_DST" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ') skills)"
+    else
+      LOADED=0; MISSING=0
+      while read -r name; do
+        [ -n "$name" ] || continue
+        if [ -d "$SKILL_SRC/$name" ]; then
+          cp -a "$SKILL_SRC/$name" "$SKILL_DST/"
+          LOADED=$((LOADED+1))
+        else
+          printf 'WARN: [s6:wire-plugins] no baked skill named "%s" (available: %s)\n' "$name" "$(ls "$SKILL_SRC")" >&2
+          MISSING=$((MISSING+1))
+        fi
+      done < <(printf '%s' "${PI_SKILLS}" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep -v '^$')
+      echo "[s6:wire-plugins] whitelist loaded -> $SKILL_DST (loaded=$LOADED skipped_unknown=$MISSING)"
+    fi
     chown -R "$RUNTIME_UID:$RUNTIME_GID" "$SKILL_DST" 2>/dev/null || true
-    echo "[s6:wire-plugins] copied baked skills -> $SKILL_DST ($(find "$SKILL_DST" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ') skills)"
   else
-    echo "[s6:wire-plugins] PI_SKILLS=true but no baked skills at $SKILL_SRC"
+    echo "[s6:wire-plugins] PI_SKILLS set but no baked skills at $SKILL_SRC"
   fi
 fi
 

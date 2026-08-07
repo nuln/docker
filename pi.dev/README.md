@@ -66,17 +66,26 @@ docker compose up -d
 docker compose exec -it pi pi
 ```
 
-### Add skills (yours + third-party)
-
 Skills are baked into the image at `/etc/s6-overlay/plugins/skills` but are
-**NOT loaded by default**. To enable them, set `PI_SKILLS=true` in `.env` and
+**NOT loaded by default**. To enable them, set `PI_SKILLS` in `.env` and
 recreate the container; on first boot `wire-plugins` copies them into
-`~/.agents/skills/` (pi's native global skill dir).
+`~/.agents/skills/` (pi's native global skill dir):
+
+| `PI_SKILLS` | Effect |
+|-------------|--------|
+| `true` | copy **all 33** curated skills |
+| `a,b,c` | copy **only** the listed skills (whitelist); unknown names are skipped with a warning |
+| `false`/empty | not loaded (default) |
+
+```bash
+PI_SKILLS=true            # everything
+PI_SKILLS=tdd,browser     # just those two
+```
 
 1. **Your own / chosen skills** — put a directory with a `SKILL.md` (name +
    description frontmatter) under
    `pi.dev/rootfs/etc/s6-overlay/plugins/skills/<skill-name>/`. Rebuild the
-   image. With `PI_SKILLS=true` they load on the next fresh boot.
+   image. With `PI_SKILLS=true` (or its whitelist) they load on the next fresh boot.
 
 2. **Third-party skill packages** — add the npm package to
    `rootfs/etc/s6-overlay/scripts/install.d/plugins.sh` (any array, e.g. `CORE`);
@@ -114,6 +123,30 @@ docker compose exec pi install.sh go --update
 Supported targets: `go` / `rust` / `java` / `bun` / `scala` / `kotlin` / `lua` / `php` / `node-tools` (TypeScript etc.) / `db-clients` (MySQL / PostgreSQL / Redis / SQLite / MinIO `mc`).
 
 > The image also **bakes in** a few base CLI tools: `gh` (GitHub CLI, `gh auth login`) and `wrangler` (Cloudflare Workers/Pages/D1/R2) — usable immediately, no `install.sh` needed.
+
+### Scaffold new projects (`new-project`)
+
+The image ships starter templates that scaffold a project into the working dir
+(`/home/pi/dev`) with zero network and the image's own toolchains:
+
+```bash
+docker compose exec pi new-project --list        # show templates
+docker compose exec pi new-project go-api my-api # scaffold Go API into my-api/
+docker compose exec pi new-project cloudflare-worker cf-app
+```
+
+`{{ PROJECT }}` in template filenames/contents is replaced with the target dir
+name. Add your own by dropping a directory under
+`pi.dev/rootfs/etc/s6-overlay/templates/<name>/` (any file ending `.tpl` gets
+the substitution + suffix stripped) and rebuilding the image.
+
+### Healthcheck
+
+The image declares a `HEALTHCHECK`; with the default `PI_AUTOSTART_WEB=1` the
+container is healthy once the Web UI answers on `:3141`, so `docker compose
+ps` shows the real boot state. Set `PI_AUTOSTART_WEB=0` and it degrades to a
+liveness check (never falsely marks the box sick just because the UI is off).
+
 
 ### Plugin ecosystem (extend pi's capabilities)
 

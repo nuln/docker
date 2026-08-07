@@ -16,6 +16,11 @@ ENV BASH_ENV=/etc/pi-env.sh
 ENTRYPOINT ["/init"]
 CMD ["/usr/local/bin/entrypoint.sh"]
 
+# Health: web UI :3141 when PI_AUTOSTART_WEB=1 (default), else liveness.
+# interval/start_period tuned so first-boot wiring (apt-free image) finishes first.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+  CMD ["/etc/s6-overlay/scripts/healthcheck.sh"]
+
 # Usage:
 #   docker compose up -d                      # first boot: s6 wires baked plugins + auto-starts web
 #   docker compose exec -it pi pi             # open the pi TUI

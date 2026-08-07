@@ -32,7 +32,7 @@ services:
       # policy. An existing config in the mount always wins.
       - PI_PERMISSION_SYSTEM_POLICY=${PI_PERMISSION_SYSTEM_POLICY:-}
       # bake the curated skills (s6-overlay/plugins/skills) into ~/.agents/skills
-      # on first boot. false/empty = skills stay in the image, NOT loaded.
+      # on first boot. true = all 33; "a,b,c" = whitelist only; false/empty = none.
       - PI_SKILLS=${PI_SKILLS:-false}
       # --- outbound proxy for the whole container (all tools: curl/go/npm/git/...). ---
       # Set HTTP_PROXY/HTTPS_PROXY/ALL_PROXY in .env to route egress through them;

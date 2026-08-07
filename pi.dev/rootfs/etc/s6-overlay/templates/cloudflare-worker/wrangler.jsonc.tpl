@@ -1,0 +1,6 @@
+name = "{{ PROJECT }}"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+[observability]
+enabled = true
