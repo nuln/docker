@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 # Build = one COPY + one RUN (all logic in rootfs/etc/s6-overlay/scripts/setup.sh).
-ARG PI_VERSION=latest
+# Pinned, not 'latest': bump deliberately for reproducible builds.
+ARG PI_VERSION=0.84.1
 ARG S6_OVERLAY_VERSION=3.2.0.0
 FROM node:24-bookworm
 

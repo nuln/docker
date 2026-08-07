@@ -2,7 +2,7 @@ name: caddy
 
 services:
   caddy:
-    image: ${CADDY_IMAGE:-ghcr.io/nuln/caddy:latest}
+    image: ${CADDY_IMAGE:-ghcr.io/nuln/caddy:2.11.4}
     command: caddy run --config /etc/caddy/Caddyfile
     container_name: caddy
     networks:

@@ -33,8 +33,8 @@ All installed during `docker build`; pi is usable immediately after the containe
 ## Build
 
 ```bash
-# local build (default latest; pin the version with --build-arg PI_VERSION=x.y.z)
-docker build -t pi.dev:latest .
+# local build (pinned by default; bump PI_VERSION in Dockerfile for a new release)
+docker build -t pi.dev:0.84.1 .
 ```
 
 ## Usage
@@ -130,9 +130,10 @@ The image ships starter templates that scaffold a project into the working dir
 (`/home/pi/dev`) with zero network and the image's own toolchains:
 
 ```bash
-docker compose exec pi new-project --list        # show templates
-docker compose exec pi new-project go-api my-api # scaffold Go API into my-api/
-docker compose exec pi new-project cloudflare-worker cf-app
+docker compose exec pi new-project --list   # show templates (go rust node python worker)
+docker compose exec pi new-project go my-api  # scaffold Go HTTP API into my-api/
+docker compose exec pi new-project worker cf-app
+docker compose exec pi new-project rust rsvc
 ```
 
 `{{ PROJECT }}` in template filenames/contents is replaced with the target dir
@@ -146,6 +147,29 @@ The image declares a `HEALTHCHECK`; with the default `PI_AUTOSTART_WEB=1` the
 container is healthy once the Web UI answers on `:3141`, so `docker compose
 ps` shows the real boot state. Set `PI_AUTOSTART_WEB=0` and it degrades to a
 liveness check (never falsely marks the box sick just because the UI is off).
+
+A **pi-watchdog** s6 longrun supervises the Web UI daemon: if `:3141` stops
+answering (and autostart is on) it restarts `pi --web` automatically.
+Tune the poll with `PI_WATCHDOG_INTERVAL` (default 30s).
+
+### Inspect loaded skills (`skills`)
+
+```bash
+docker compose exec pi skills      # loaded skills (name + description)
+docker compose exec pi skills -a     # every skill available in the image
+docker compose exec pi skills tdd    # confirm tdd is loaded (exit 0/1)
+```
+
+### Reclaim disk space (`install.sh gc`)
+
+Installed language toolchains live in the `data/cache` volume. Clean them on
+demand:
+
+```bash
+docker compose exec pi install.sh gc          # list cached toolchains + sizes
+docker compose exec pi install.sh gc go rust  # remove specific ones
+docker compose exec pi install.sh gc --all    # remove every cached toolchain
+```
 
 
 ### Plugin ecosystem (extend pi's capabilities)
@@ -224,11 +248,13 @@ Verified cycle: 1. start -> install go/lua -> `go`/`lua` work in the pi process;
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `TZ` | timezone | `Asia/Shanghai` |
-| `PI_IMAGE` | image name | `pi.dev:latest` |
+| `PI_IMAGE` | image name | `ghcr.io/nuln/pi.dev:0.84.1` |
 | `CARGO_BUILD_JOBS` | Rust parallel build jobs | `1` |
 | `GOMAXPROCS` | Go parallelism | `2` |
 | `MAKEFLAGS` | make parallelism | `-j2` |
 | `MEM_LIMIT` / `CPU_LIMIT` | container memory/CPU caps | `4g` / `2` |
+| `PI_SKILLS` | load baked skills (`true`/whitelist/`false`) | `false` |
+| `PI_WATCHDOG_INTERVAL` | web-UI self-healing poll (s) | `30` |
 
 ### AI provider accounts
 

@@ -180,6 +180,61 @@ install_tools() {
 }
 
 # =============================================================================
+# install_gc — clean on-demand toolchains from the cache to reclaim disk.
+#
+# Usage:
+#   install.sh gc              list every cached tool with its size
+#   install.sh gc go rust ...  remove only the named tools
+#   install.sh gc --all        remove every cached toolchain
+#
+# Tool dirs live under $CACHE (data/cache volume), each holding its env.sh, and
+# are named after the tool. Removing a dir also drops its env.sh so the tool no
+# longer loads on next shell/pi session. Skips anything not in the cache.
+# =============================================================================
+install_gc() {
+  local action="${1:-}"
+  [ -d "$CACHE" ] || { log "gc: no cache at $CACHE"; return 0; }
+
+  if [ "$action" = "--all" ] || [ "$action" = "-a" ]; then
+    echo "[install] gc: removing ALL cached toolchains in $CACHE"
+    for d in "$CACHE"/*/; do
+      [ -d "$d" ] || continue
+      rm -rf "$d"
+      echo "  removed $(basename "$d")"
+    done
+    echo "[install] gc: cache cleared"
+    return 0
+  fi
+
+  if [ -z "$action" ] || [ "$action" = "--list" ] || [ "$action" = "-l" ]; then
+    echo "[install] gc: cached toolchains in $CACHE:"
+    local any=0
+    for d in "$CACHE"/*/; do
+      [ -d "$d" ] || continue
+      any=1
+      printf '  %-14s %s\n' "$(basename "$d")" "$(du -sh "$d" 2>/dev/null | awk '{print $1}')"
+    done
+    [ "$any" -eq 1 ] || echo "  (none)"
+    echo
+    echo "  Remove specific tools: install.sh gc <go> <rust> ...   or all: install.sh gc --all"
+    return 0
+  fi
+
+  # explicit tool names
+  for t in "$@"; do
+    local dir="$CACHE/$t"
+    if [ -d "$dir" ]; then
+      local size
+      size="$(du -sh "$dir" 2>/dev/null | awk '{print $1}')"
+      rm -rf "$dir"
+      log "gc: removed $t ($size)"
+    else
+      log "gc: no cached tool named '$t' (nothing removed)"
+    fi
+  done
+}
+
+# =============================================================================
 # 4. Top-level dispatch
 # =============================================================================
 case "${1:-}" in
@@ -194,6 +249,10 @@ case "${1:-}" in
     ;;
   -h|--help|help|"")
     usage
+    ;;
+  gc|clean)
+    shift
+    install_gc "$@"
     ;;
   *)
     install_tools "$@"

@@ -7,14 +7,13 @@ An encrypted-credential iCloud backup image, based on [mandarons/icloud-docker](
 The image is built automatically by CI (`.github/workflows/icloud.yml`) for multiple architectures (amd64/arm64) and pushed to:
 
 ```
-ghcr.io/nuln/icloud:latest
-ghcr.io/nuln/icloud:<upstream version>
+ghcr.io/nuln/icloud:1.28.0
 ```
 
-The version is taken from the latest upstream `mandarons/icloud-docker` release (the Dockerfile pins it via `ARG ICD_VERSION`). To build locally:
+The version is pinned in `icloud/Dockerfile` (`ARG ICD_VERSION`, not `latest`) so builds are reproducible; bump it deliberately for a new upstream release. To build locally:
 
 ```bash
-docker build -t ghcr.io/nuln/icloud:latest icloud
+docker build -t ghcr.io/nuln/icloud:1.28.0 icloud
 ```
 
 ## Usage

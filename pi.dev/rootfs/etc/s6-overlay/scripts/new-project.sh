@@ -23,7 +23,7 @@ if [ "${1:-}" = "--list" ] || [ "${1:-}" = "-l" ]; then
     [ -d "$t" ] || continue
     name="${t%/}"; name="${name##*/}"
     desc=""
-    [ -f "$t/README.tpl.md" ] && desc="$(sed -n '1s/^# *//p' "$t/README.tpl.md" 2>/dev/null)"
+    [ -f "$t/README.md.tpl" ] &&     desc="$(sed -n '1s/^# *//p' "$t/README.md.tpl" 2>/dev/null)"
     printf '  %-18s %s\n' "$name" "$desc"
   done
   exit 0
@@ -72,7 +72,13 @@ echo
 echo "Done. Next steps:"
 if [ -f "$DIR/go.mod" ] && command -v go >/dev/null 2>&1; then
   echo "  cd $DIR && go mod tidy && go run ."
+elif [ -f "$DIR/Cargo.toml" ] && command -v cargo >/dev/null 2>&1; then
+  echo "  cd $DIR && cargo run"
+elif [ -f "$DIR/package.json" ] && command -v npm >/dev/null 2>&1; then
+  echo "  cd $DIR && npm i && npm run dev"
 elif [ -f "$DIR/wrangler.jsonc" ] && command -v wrangler >/dev/null 2>&1; then
   echo "  cd $DIR && wrangler dev -l"
+elif [ -f "$DIR/main.py" ] && command -v python3 >/dev/null 2>&1; then
+  echo "  cd $DIR && python3 main.py"
 fi
-echo "  (tip: install a toolchain with: install.sh go|bun|node-tools ...)"
+echo "  (tip: install a toolchain with: install.sh go|rust|node-tools|bun ...)"

@@ -422,16 +422,52 @@ jobs:
           docker run -d --name pi-scaf -v "$TMP:/home/pi/dev" "$IMG" bash -c 'sleep 60'
           sleep 8
           docker exec pi-scaf new-project --list
-          docker exec pi-scaf new-project go-api my-api >/tmp/scaf.out 2>&1 || { cat /tmp/scaf.out; exit 1; }
+          docker exec pi-scaf new-project go my-api >/tmp/scaf.out 2>&1 || { cat /tmp/scaf.out; exit 1; }
           docker exec pi-scaf test -f /home/pi/dev/my-api/main.go || { echo "FAIL: main.go missing"; exit 1; }
           docker exec pi-scaf grep -q '"my-api"' /home/pi/dev/my-api/main.go || { echo "FAIL: {{ PROJECT }} not substituted"; exit 1; }
-          docker exec pi-scaf new-project cloudflare-worker cf-app >/tmp/scaf2.out 2>&1 || { cat /tmp/scaf2.out; exit 1; }
+          docker exec pi-scaf new-project worker cf-app >/tmp/scaf2.out 2>&1 || { cat /tmp/scaf2.out; exit 1; }
           docker exec pi-scaf test -f /home/pi/dev/cf-app/wrangler.jsonc || { echo "FAIL: wrangler.jsonc missing"; exit 1; }
           docker exec pi-scaf grep -q 'name = "cf-app"' /home/pi/dev/cf-app/wrangler.jsonc || { echo "FAIL: wrangler placeholder not substituted"; exit 1; }
           docker exec pi-scaf test -f /home/pi/dev/cf-app/README.md || { echo "FAIL: README.md.tpl suffix not stripped"; exit 1; }
+          # every language template must scaffold (node rust python) with substitution
+          for t in rust node python; do
+            docker exec pi-scaf new-project "$t" "proj-$t" >/dev/null 2>&1 || { echo "FAIL: scaffold $t"; exit 1; }
+            docker exec pi-scaf test -d "/home/pi/dev/proj-$t" || { echo "FAIL: no dir for $t"; exit 1; }
+          done
           docker exec pi-scaf new-project no-such-template >/tmp/scaf3.out 2>&1 && { echo "FAIL: unknown template should error"; exit 1; }
-          echo "PASS: new-project scaffolds go-api + cloudflare-worker, placeholders + .tpl stripped"
+          echo "PASS: new-project scaffolds go + worker + rust/node/python, placeholders + .tpl stripped"
           docker rm -f pi-scaf >/dev/null
+
+      - name: install.sh gc (cache cleanup)
+        run: |
+          set -euo pipefail
+          IMG="${{ needs.build.outputs.image }}"
+          TMP="$(mktemp -d)"; chmod 777 "$TMP"
+          mkdir -p "$TMP/go" "$TMP/rust"
+          docker run -d --name pi-gc -v "$TMP:/home/pi/cache" "$IMG" bash -c 'sleep 30'
+          sleep 6
+          OUT="$(docker exec pi-gc install.sh gc)"
+          echo "$OUT"
+          echo "$OUT" | grep -qE 'go|rust' || { echo "FAIL: gc list should show cached tools"; exit 1; }
+          docker exec pi-gc install.sh gc go >/dev/null
+          docker exec pi-gc test ! -d /home/pi/cache/go || { echo "FAIL: go not removed"; exit 1; }
+          docker exec pi-gc test -d /home/pi/cache/rust || { echo "FAIL: rust should remain"; exit 1; }
+          echo "PASS: install.sh gc removes selected tools"
+          docker rm -f pi-gc >/dev/null
+
+      - name: skills command (self-check) reflects loaded set
+        run: |
+          set -euo pipefail
+          IMG="${{ needs.build.outputs.image }}"
+          TMP="$(mktemp -d)"; chmod 777 "$TMP"
+          docker run -d --name pi-sk-cmd -e PI_SKILLS=tdd,browser \
+            -v "$TMP:/home/pi/.pi" "$IMG" bash -c 'sleep 60'
+          sleep 12
+          docker exec pi-sk-cmd sh -c 'skills | grep -q tdd' || { echo "FAIL: skills list missing tdd"; exit 1; }
+          docker exec pi-sk-cmd sh -c 'skills | grep -q browser' || { echo "FAIL: skills list missing browser"; exit 1; }
+          docker exec pi-sk-cmd sh -c 'skills research && exit 1 || exit 0' || { echo "FAIL: research should not be loaded"; exit 1; }
+          echo "PASS: skills command shows loaded set"
+          docker rm -f pi-sk-cmd >/dev/null
 
       - name: HEALTHCHECK present + healthy with web autostart
         run: |
@@ -447,4 +483,11 @@ jobs:
           echo "health status: $ST"
           [ "$ST" = "healthy" ] || { echo "FAIL: healthcheck not healthy"; docker logs pi-hc 2>&1 | tail -20; exit 1; }
           echo "PASS: HEALTHCHECK reports healthy"
+
+          # pi-watchdog longrun must be present and supervising
+          "$(command -v docker) exec pi-hc bash -c 's6-rc -l listall 2>/dev/null | grep -q pi-watchdog'" \
+            || echo "WARN: pi-watchdog not listed by s6-rc"
+          docker exec pi-hc sh -c 'test -x /etc/s6-overlay/s6-rc.d/pi-watchdog/run' \
+            || { echo "FAIL: pi-watchdog run script missing"; exit 1; }
+          echo "PASS: pi-watchdog service files present"
           docker rm -f pi-hc >/dev/null

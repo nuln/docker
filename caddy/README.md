@@ -18,14 +18,13 @@ A custom Caddy image that compiles in several plugins via `xcaddy` on top of the
 The image is built automatically by CI (`.github/workflows/caddy.yml`) for multiple architectures (amd64/arm64) and pushed to:
 
 ```
-ghcr.io/nuln/caddy:latest
-ghcr.io/nuln/caddy:<version>
+ghcr.io/nuln/caddy:2.11.4
 ```
 
-The version is taken from the latest official Caddy release. To build locally:
+The version is pinned in `caddy/Dockerfile` (`ARG CADDY_VERSION`, not `latest`) so builds are reproducible; bump it deliberately for a new Caddy release. To build locally:
 
 ```bash
-docker build -t ghcr.io/nuln/caddy:latest caddy
+docker build -t ghcr.io/nuln/caddy:2.11.4 caddy
 ```
 
 ## Usage

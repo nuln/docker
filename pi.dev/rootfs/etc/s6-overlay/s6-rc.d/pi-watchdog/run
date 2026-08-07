@@ -1,0 +1,57 @@
+#!/command/with-contenv bash
+# =============================================================================
+# pi-watchdog — s6 longrun: self-healing monitor for the Web UI daemon.
+#
+# pi-web is a oneshot that starts `pi --web` in the background and returns, so
+# if that daemon later dies nothing restarts it. This longrun polls the Web UI
+# port and, when it is down AND autostart is enabled, restarts the daemon.
+#
+# Disabled with PI_AUTOSTART_WEB=0 (same flag that disables pi-web). Runs as
+# root (s6), drops to the pi user to relaunch pi --web.
+# =============================================================================
+set -uo pipefail
+
+INTERVAL="${PI_WATCHDOG_INTERVAL:-30}"
+PORT="${PI_WEB_HEALTH_PORT:-3141}"
+AGENT_DIR="${PI_CODING_AGENT_DIR:-/home/pi/.pi/agent}"
+RUNTIME_UID="${PI_USER_UID:-1000}"
+RUNTIME_GID="${PI_USER_GID:-1000}"
+RUNTIME_HOME="${PI_USER_HOME:-/home/pi}"
+
+if [ "${PI_AUTOSTART_WEB:-1}" != "1" ]; then
+  while :; do sleep 3600; done
+fi
+
+if ! command -v pi >/dev/null 2>&1; then
+  echo "[s6:pi-watchdog] pi not found; idle"
+  while :; do sleep 3600; done
+fi
+
+mkdir -p "$AGENT_DIR"
+
+is_alive() {
+  local rc=1
+  if timeout 2 bash -c "exec 3<>/dev/tcp/127.0.0.1/$PORT" 2>/dev/null; then
+    rc=0
+  fi
+  exec 3>&- 3<&- 2>/dev/null || true
+  return "$rc"
+}
+
+log() { echo "[s6:pi-watchdog] $*"; }
+
+while :; do
+  sleep "$INTERVAL"
+  is_alive && continue
+  log "web UI down on :$PORT — restarting daemon"
+  setpriv --reuid="$RUNTIME_UID" --regid="$RUNTIME_GID" --init-groups /usr/bin/env \
+    HOME="$RUNTIME_HOME" \
+    PI_CODING_AGENT_DIR="$AGENT_DIR" \
+    nohup pi --web --lan > "$AGENT_DIR/pi-web.log" 2>&1 &
+  sleep 2
+  if is_alive; then
+    log "web UI recovered on :$PORT"
+  else
+    log "still down after restart; will retry in ${INTERVAL}s"
+  fi
+done

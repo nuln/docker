@@ -1,4 +1,5 @@
-ARG CADDY_VERSION=latest
+# Pinned, not 'latest': bump deliberately for reproducible builds.
+ARG CADDY_VERSION=2.11.4
 FROM caddy:builder AS builder
 RUN xcaddy build \
   --with github.com/caddy-dns/cloudflare \
