@@ -301,3 +301,80 @@ jobs:
             && echo "PASS: user marker preserved after restart" \
             || { echo "FAIL: user-modified settings.json was overwritten"; exit 1; }
           docker rm -f pi-it2 >/dev/null
+
+  # Baked-skills gate: PI_SKILLS (default off) controls whether the 33 curated
+  # skills baked at /etc/s6-overlay/plugins/skills are copied into pi's global
+  # skills dir (~/.agents/skills). Verify default-off means NOT loaded, and
+  # PI_SKILLS=true means every skill lands with a readable SKILL.md.
+  skills:
+    name: Skills (PI_SKILLS gate)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Pull image
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker pull ${{ needs.build.outputs.image }}
+
+      - name: Default boot — skills must NOT be loaded
+        run: |
+          set -euo pipefail
+          IMG="${{ needs.build.outputs.image }}"
+          TMP="$(mktemp -d)"; chmod 777 "$TMP"
+          docker run -d --name pi-sk-def -v "$TMP:/home/pi/.pi" "$IMG" bash -c 'sleep 30'
+          sleep 12
+          if docker exec pi-sk-def test -d /home/pi/.agents/skills; then
+            echo "FAIL: ~/.agents/skills exists even with PI_SKILLS unset"
+            docker exec pi-sk-def sh -c 'ls -la /home/pi/.agents/skills' || true
+            exit 1
+          fi
+          echo "PASS: skills NOT loaded by default"
+          docker rm -f pi-sk-def >/dev/null
+
+      - name: PI_SKILLS=true — all baked skills copied and readable
+        run: |
+          set -euo pipefail
+          IMG="${{ needs.build.outputs.image }}"
+          TMP="$(mktemp -d)"; chmod 777 "$TMP"
+          docker run -d --name pi-sk-on -e PI_SKILLS=true -v "$TMP:/home/pi/.pi" "$IMG" bash -c 'sleep 45'
+          for i in $(seq 1 30); do
+            docker exec pi-sk-on test -d /home/pi/.agents/skills && break
+            sleep 2
+          done
+          docker exec pi-sk-on test -d /home/pi/.agents/skills || { echo "FAIL: ~/.agents/skills missing"; exit 1; }
+
+          # verify.sh asserts: every top-level dir has a SKILL.md with a name field,
+          # owned by pi (uid 1000), and readable by pi.
+          cat > "$RUNNER_TEMP/skills_verify.sh" <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          SK=/home/pi/.agents/skills
+          DIRS=$(find "$SK" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')
+          [ "$DIRS" -eq 33 ] || { echo "FAIL: expected 33 skills, found $DIRS"; exit 1; }
+          echo "PASS: $DIRS skill dirs copied"
+          FAIL=0
+          for d in "$SK"/*/; do
+            [ -f "$d/SKILL.md" ] || { echo "FAIL: no SKILL.md in $d"; FAIL=1; continue; }
+            grep -q '^name:' "$d/SKILL.md" || { echo "FAIL: SKILL.md lacks name: in $d"; FAIL=1; continue; }
+            grep -q '^description:' "$d/SKILL.md" || { echo "FAIL: SKILL.md lacks description: in $d"; FAIL=1; continue; }
+          done
+          [ "$FAIL" -eq 0 ] || exit 1
+          echo "PASS: every skill has SKILL.md with name+description"
+          OWNER=$(stat -c '%u:%g' "$SK")
+          [ "$OWNER" = "1000:1000" ] || { echo "FAIL: skills dir owner $OWNER"; exit 1; }
+          su -s /bin/bash pi -c "test -r $SK/tdd/SKILL.md" || { echo "FAIL: pi cannot read SKILL.md"; exit 1; }
+          su -s /bin/bash pi -c "ls $SK >/dev/null" || { echo "FAIL: pi cannot list skills dir"; exit 1; }
+          echo "PASS: skills owned by pi (1000:1000), readable+listable by pi"
+          echo "SKILLS OK"
+          SCRIPT
+
+          docker cp "$RUNNER_TEMP/skills_verify.sh" pi-sk-on:/tmp/skills_verify.sh
+          docker exec pi-sk-on bash /tmp/skills_verify.sh
+
+          # wire-plugins reported the copy exactly once
+          GEN="$(docker logs pi-sk-on 2>&1 | grep -c 'copied baked skills' || true)"
+          [ "$GEN" -eq 1 ] || { echo "FAIL: skills copied $GEN times (expected 1)"; exit 1; }
+          echo "PASS: skills copied exactly once"
+          docker rm -f pi-sk-on >/dev/null
