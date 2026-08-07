@@ -149,8 +149,11 @@ ps` shows the real boot state. Set `PI_AUTOSTART_WEB=0` and it degrades to a
 liveness check (never falsely marks the box sick just because the UI is off).
 
 A **pi-watchdog** s6 longrun supervises the Web UI daemon: if `:3141` stops
-answering (and autostart is on) it restarts `pi --web` automatically.
-Tune the poll with `PI_WATCHDOG_INTERVAL` (default 30s).
+answering (and autostart is on) it restarts `pi --web` automatically, honoring
+`PI_WEB_ARGS`. Tune the poll with `PI_WATCHDOG_INTERVAL` (default 30s). It
+tracks restart count + crash-loop state in `~/.pi/agent/pi-watchdog.json`, and
+after `PI_WATCHDOG_MAX_FAILURES` (default 3) consecutive failed restarts it
+backs off instead of relaunching blindly.
 
 ### Inspect loaded skills (`skills`)
 
@@ -255,6 +258,7 @@ Verified cycle: 1. start -> install go/lua -> `go`/`lua` work in the pi process;
 | `MEM_LIMIT` / `CPU_LIMIT` | container memory/CPU caps | `4g` / `2` |
 | `PI_SKILLS` | load baked skills (`true`/whitelist/`false`) | `false` |
 | `PI_WATCHDOG_INTERVAL` | web-UI self-healing poll (s) | `30` |
+| `PI_WATCHDOG_MAX_FAILURES` | back off after N failed restarts (crash-loop guard) | `3` |
 
 ### AI provider accounts
 

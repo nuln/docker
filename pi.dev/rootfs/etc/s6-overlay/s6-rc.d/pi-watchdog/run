@@ -6,8 +6,16 @@
 # if that daemon later dies nothing restarts it. This longrun polls the Web UI
 # port and, when it is down AND autostart is enabled, restarts the daemon.
 #
+# Observability & crash control:
+#   * restart counter and consecutive-failure streak are written to a status
+#     file (AGENT_DIR/pi-watchdog.json) so a supervisor/host can inspect them;
+#   * after PI_WATCHDOG_MAX_FAILURES consecutive failed restarts the watchdog
+#     stops hammering, emits a persistent CRIT crash-loop marker, and backs off
+#     (it keeps polling every interval but no longer relaunches blind), so a
+#     permanently broken web daemon can't spin the CPU.
+#
 # Disabled with PI_AUTOSTART_WEB=0 (same flag that disables pi-web). Runs as
-# root (s6), drops to the pi user to relaunch pi --web.
+# root (s6), drops to the pi user to relaunch pi --web, honoring PI_WEB_ARGS.
 # =============================================================================
 set -uo pipefail
 
@@ -17,6 +25,10 @@ AGENT_DIR="${PI_CODING_AGENT_DIR:-/home/pi/.pi/agent}"
 RUNTIME_UID="${PI_USER_UID:-1000}"
 RUNTIME_GID="${PI_USER_GID:-1000}"
 RUNTIME_HOME="${PI_USER_HOME:-/home/pi}"
+MAX_FAILURES="${PI_WATCHDOG_MAX_FAILURES:-3}"
+read -r -a WEB_ARGS <<< "${PI_WEB_ARGS:---lan}"
+
+STATUS_FILE="$AGENT_DIR/pi-watchdog.json"
 
 if [ "${PI_AUTOSTART_WEB:-1}" != "1" ]; then
   while :; do sleep 3600; done
@@ -30,28 +42,59 @@ fi
 mkdir -p "$AGENT_DIR"
 
 is_alive() {
-  local rc=1
+  # fd opens inside a `bash -c` subshell; success == port accepts a connection.
   if timeout 2 bash -c "exec 3<>/dev/tcp/127.0.0.1/$PORT" 2>/dev/null; then
-    rc=0
+    return 0
   fi
-  exec 3>&- 3<&- 2>/dev/null || true
-  return "$rc"
+  return 1
 }
 
 log() { echo "[s6:pi-watchdog] $*"; }
 
+# write_status <restarts> <consecutive_failures>
+write_status() {
+  [ -n "${STATUS_FILE:-}" ] || return 0
+  local restarts="$1" failures="$2"
+  printf '{"restarts":%s,"consecutive_failures":%s,"port":%s,"ts":%s}\n' \
+    "$restarts" "$failures" "$PORT" "$(date +%s)" > "$STATUS_FILE"
+  chown "$RUNTIME_UID:$RUNTIME_GID" "$STATUS_FILE" 2>/dev/null || true
+}
+
+RESTARTS=0
+FAILS=0
+
 while :; do
   sleep "$INTERVAL"
-  is_alive && continue
-  log "web UI down on :$PORT — restarting daemon"
+
+  if is_alive; then
+    # recovered: reset the failure streak so one blip doesn't count as a crash
+    if [ "$FAILS" -gt 0 ]; then
+      FAILS=0
+      write_status "$RESTARTS" "$FAILS"
+    fi
+    continue
+  fi
+
+  ((RESTARTS += 1))
+  ((FAILS += 1))
+
+  if [ "$FAILS" -gt "$MAX_FAILURES" ]; then
+    # crash-loop: stop blind relaunching, keep polling, surface a permanent marker
+    log "CRASH-LOOP: web UI down after $MAX_FAILURES consecutive restarts; backing off (still polling every ${INTERVAL}s, not relaunching)"
+    write_status "$RESTARTS" "$FAILS"
+    continue
+  fi
+
+  log "web UI down on :$PORT (real restart count $RESTARTS) — relaunching"
   setpriv --reuid="$RUNTIME_UID" --regid="$RUNTIME_GID" --init-groups /usr/bin/env \
     HOME="$RUNTIME_HOME" \
     PI_CODING_AGENT_DIR="$AGENT_DIR" \
-    nohup pi --web --lan > "$AGENT_DIR/pi-web.log" 2>&1 &
+    nohup pi --web "${WEB_ARGS[@]}" >> "$AGENT_DIR/pi-web.log" 2>&1 &
+  write_status "$RESTARTS" "$FAILS"
   sleep 2
   if is_alive; then
-    log "web UI recovered on :$PORT"
+    log "web UI recovered on :$PORT (restarts=$RESTARTS)"
   else
-    log "still down after restart; will retry in ${INTERVAL}s"
+    log "still down $FAILS/$MAX_FAILURES; will retry in ${INTERVAL}s"
   fi
 done

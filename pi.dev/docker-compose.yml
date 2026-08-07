@@ -34,8 +34,9 @@ services:
       # bake the curated skills (s6-overlay/plugins/skills) into ~/.agents/skills
       # on first boot. true = all 33; "a,b,c" = whitelist only; false/empty = none.
       - PI_SKILLS=${PI_SKILLS:-false}
-      # pi-watchdog poll interval (s) for the Web UI self-healing monitor
+      # pi-watchdog poll interval (s) and crash-loop threshold for the Web UI self-healing monitor
       - PI_WATCHDOG_INTERVAL=${PI_WATCHDOG_INTERVAL:-30}
+      - PI_WATCHDOG_MAX_FAILURES=${PI_WATCHDOG_MAX_FAILURES:-3}
       # --- outbound proxy for the whole container (all tools: curl/go/npm/git/...). ---
       # Set HTTP_PROXY/HTTPS_PROXY/ALL_PROXY in .env to route egress through them;
       # NO_PROXY keeps LAN/fnOS hosts on a direct connection. Leave blank to disable.
