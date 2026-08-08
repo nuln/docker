@@ -84,6 +84,8 @@ su -s /bin/bash pi -c '
   clone_plg zsh-syntax-highlighting https://github.com/zsh-users/zsh-syntax-highlighting.git
   clone_plg zsh-autosuggestions https://github.com/zsh-users/zsh-autosuggestions.git
   # .zshrc: load the toolchain env (same file pi uses via BASH_ENV) + oh-my-zsh
+  # Use the ABSOLUTE path (not $HOME) so sourcing it works for any user incl.
+  # root (CI validation, docker exec) — $HOME here would point at /root.
   cat > "$HOME/.zshrc" <<'"'"'ZSHRC'"'"'
 # glob with no matches (e.g. no toolchains yet) must not error in zsh
 setopt nonomatch 2>/dev/null || true
@@ -92,7 +94,7 @@ setopt nonomatch 2>/dev/null || true
 for __f in /home/pi/cache/*/env.sh; do [ -r "$__f" ] && . "$__f"; done
 [ -f /etc/pi-env.sh ] && . /etc/pi-env.sh
 
-export ZSH="$HOME/.oh-my-zsh"
+export ZSH=/home/pi/.oh-my-zsh
 ZSH_THEME="robbyrussell"
 plugins=(git zsh-syntax-highlighting zsh-autosuggestions)
 source "$ZSH/oh-my-zsh.sh"
