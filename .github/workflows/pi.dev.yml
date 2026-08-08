@@ -472,7 +472,25 @@ jobs:
           grep -q "ghp_extra" "$TMP/.npmrc" || { echo "FAIL: new npm token did not reach host"; exit 1; }
           grep -q "new-tok" "$TMP/.cargo/credentials.toml" || { echo "FAIL: cargo credentials did not reach host"; exit 1; }
           echo "PASS: credentials wired into PI_CREDS_DIR, layered symlinks + write-through confirmed"
+
+          # catch-all: a brand-new dot-entry created inside the running container
+          # (unknown tool, not in the built-in list) must be picked up on the next
+          # boot and persisted, surviving a recreate.
+          docker exec pi-creds sh -c 'mkdir -p /home/pi/.mytool && printf "token=catchall\n" > /home/pi/.mytool/creds.json && printf "extra\n" > /home/pi/.extracred'
           docker rm -f pi-creds >/dev/null
+          docker run -d --name pi-creds2 \
+            -e PI_CREDS_DIR=/home/pi/.creds \
+            -v "$TMP:/home/pi/.creds" \
+            "$IMG" bash -c 'sleep 60'
+          sleep 14
+          docker exec pi-creds2 sh -c 'test -L /home/pi/.mytool' \
+            || { echo "FAIL: catch-all did not wire new tool dir"; exit 1; }
+          grep -q catchall "$TMP/.mytool/creds.json" \
+            || { echo "FAIL: new tool cred did not reach host mount"; exit 1; }
+          docker exec pi-creds2 sh -c 'test -L /home/pi/.extracred && cat /home/pi/.extracred | grep -q extra' \
+            || { echo "FAIL: new flat dotfile not wired"; exit 1; }
+          echo "PASS: catch-all wires new in-container credentials across recreate"
+          docker rm -f pi-creds2 >/dev/null
 
       - name: install.sh gc (cache cleanup)
         run: |

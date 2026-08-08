@@ -48,7 +48,7 @@ OUT="$AGENT_DIR/settings.json"
 # (before the settings.json early-exit below) with symlinks, so the real bytes
 # live on the host and survive recreation.
 #
-# Coverage (new tools are additive; operator can widen with PI_CRED_EXTRA):
+# Coverage:
 #   A. whole credential dirs  : ~/.config (gh, gcloud, azure, wrangler,
 #                               uv, helm, rclone, planetscale...), ~/.ssh,
 #                               ~/.aws, ~/.azure, ~/.docker, ~/.kube
@@ -58,6 +58,10 @@ OUT="$AGENT_DIR/settings.json"
 #                               redirected into cache, so only creds file),
 #                               ~/.terraform.d/credentials.tfrc.json
 #   D. PI_CRED_EXTRA          : comma-separated ~-relative paths (dir or file)
+#   E. catch-all              : ANY other dot-entry at $HOME root is symlinked
+#                               on the fly, so a NEW tool's credential file
+#                               created in a running container still survives
+#                               the next recreate without a script change.
 # Any real file/dir already present in home is migrated into the mount first.
 # ---------------------------------------------------------------------------
 CREDS_DIR="${PI_CREDS_DIR:-}"
@@ -123,6 +127,23 @@ if [ -n "$CREDS_DIR" ] && [ -d "$CREDS_DIR" ]; then
     done
     IFS=$OIFS
   fi
+
+  # E. catch-all: any OTHER dot-entry at $HOME root created by tools we did not
+  # pre-list (~/.claude, ~/.cursor, ~/.kube, whatever a future CLI invents) is
+  # symlinked into the mount on the fly, so an unknown credential file written in
+  # this container survives a recreate even if it is not in the built-in list.
+  # Skip list: the agent/persisted dirs that must stay real (own mounts), the
+  # credential mount itself, cache, and our own already-wired names.
+  CREDS_NO_WIRE=". .pi .pi-plugins .creds cache dev .config .ssh .aws .azure .docker .kube .wrangler .gitconfig .git-credentials .netrc .npmrc .pypirc .bunfig.toml .gemrc .cargo .terraform.d"
+  while IFS='' read -r entry; do
+    base="$(basename "$entry")"
+    case " $CREDS_NO_WIRE " in *" $base "*) continue ;; esac
+    if [ -d "$entry" ]; then
+      wire_ln dir "$entry" "$CREDS_DIR/$base"
+    else
+      wire_ln file "$entry" "$CREDS_DIR/$base"
+    fi
+  done < <(find "$HOME_DIR" -maxdepth 1 -mindepth 1 -name '.*' ! -name '.' ! -name '..')
 
   chown -R "$RUNTIME_UID:$RUNTIME_GID" "$CREDS_DIR" 2>/dev/null || true
   echo "[s6:wire-plugins] credentials symlinked into $CREDS_DIR (gh/git/npm/cargo/docker/cloud survive recreate)"
