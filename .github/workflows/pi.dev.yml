@@ -552,16 +552,17 @@ jobs:
       - name: oh-my-zsh + default shell is zsh
         run: |
           set -euo pipefail
-          docker run --rm --entrypoint bash ${{ needs.build.outputs.image }} <<'SCRIPT'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          shell=$(getent passwd pi | cut -d: -f7)
+          IMG="${{ needs.build.outputs.image }}"
+          docker run -d --name pi-zsh "$IMG" bash -c 'sleep 30'
+          sleep 8
+          shell="$(docker exec pi-zsh bash -c 'getent passwd pi | cut -d: -f7')"
           [ "$shell" = "/usr/bin/zsh" ] || { echo "FAIL: pi shell is $shell, expected /usr/bin/zsh"; exit 1; }
           echo "PASS: pi default shell is $shell"
-          [ -d /home/pi/.oh-my-zsh ] || { echo "FAIL: ~/.oh-my-zsh missing"; exit 1; }
-          [ -d /home/pi/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting ] || { echo "FAIL: highlight plugin missing"; exit 1; }
-          [ -d /home/pi/.oh-my-zsh/custom/plugins/zsh-autosuggestions ] || { echo "FAIL: autosuggest plugin missing"; exit 1; }
+          docker exec pi-zsh test -d /home/pi/.oh-my-zsh || { echo "FAIL: ~/.oh-my-zsh missing"; exit 1; }
+          docker exec pi-zsh test -d /home/pi/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting || { echo "FAIL: highlight plugin missing"; exit 1; }
+          docker exec pi-zsh test -d /home/pi/.oh-my-zsh/custom/plugins/zsh-autosuggestions || { echo "FAIL: autosuggest plugin missing"; exit 1; }
           echo "PASS: oh-my-zsh + plugins present"
-          zsh -c "source /home/pi/.zshrc && echo zsh-ok" >/tmp/zsh.out 2>&1 || { echo "FAIL: .zshrc load failed"; cat /tmp/zsh.out; exit 1; }
-          grep -q zsh-ok /tmp/zsh.out && echo "PASS: .zshrc loads cleanly"
-          SCRIPT
+          OUT="$(docker exec pi-zsh bash -c 'zsh -c "source /home/pi/.zshrc && echo zsh-ok" 2>&1')" \
+            || { echo "FAIL: .zshrc load failed"; echo "$OUT"; exit 1; }
+          echo "$OUT" | grep -q zsh-ok && echo "PASS: .zshrc loads cleanly"
+          docker rm -f pi-zsh >/dev/null
