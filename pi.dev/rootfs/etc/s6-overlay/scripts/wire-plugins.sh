@@ -77,21 +77,25 @@ if [ -n "$CREDS_DIR" ] && [ -d "$CREDS_DIR" ]; then
         mkdir -p "$source" 2>/dev/null || true
       else
         mkdir -p "$(dirname "$source")" 2>/dev/null || true
-        : > "$source" || true
+        # `source` often already exists on the host mount (e.g. a login wrote
+        # creds before we mounted). NEVER clobber it — only create a placeholder
+        # when it is really missing, so pre-seeded tokens survive this boot.
+        [ -e "$source" ] || { : > "$source" || true; }
       fi
       mkdir -p "$(dirname "$target")"
       ln -s "$source" "$target"
       return 0
     fi
     # real file/dir already present in home (image-baked or written before the
-    # mount existed): move contents into the mount, then symlink.
+    # mount existed): move contents into the mount, then symlink. Merge without
+    # clobbering what is already on the host mount (pre-seeded creds win).
     if [ "$type" = "dir" ]; then
       mkdir -p "$source" 2>/dev/null || true
       cp -a "$target"/. "$source"/ 2>/dev/null || true
       rm -rf -- "$target"
     else
       mkdir -p "$(dirname "$source")" 2>/dev/null || true
-      cp -a "$target" "$source" 2>/dev/null || true
+      [ -e "$source" ] || cp -a "$target" "$source" 2>/dev/null || true
       rm -f -- "$target"
     fi
     ln -s "$source" "$target"
