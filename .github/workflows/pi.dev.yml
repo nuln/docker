@@ -438,6 +438,38 @@ jobs:
           echo "PASS: new-project scaffolds go + worker + rust/node/python, placeholders + .tpl stripped"
           docker rm -f pi-scaf >/dev/null
 
+      - name: Credentials persist via PI_CREDS_DIR mount (gh/git/ssh)
+        run: |
+          set -euo pipefail
+          IMG="${{ needs.build.outputs.image }}"
+          TMP="$(mktemp -d)"; chmod 777 "$TMP"
+          mkdir -p "$TMP/gh" "$TMP/.ssh"
+          # pre-seed a gh host + ssh key on the HOST mount, as a strictly-persisted login
+          printf 'github.com:\n  oauth_token: super-secret\n  user: ned\n' > "$TMP/gh/hosts.yml"
+          printf 'ssh-rsa AAAA... pi@host\n' > "$TMP/.ssh/id_rsa.pub"
+          docker run -d --name pi-creds \
+            -e PI_CREDS_DIR=/home/pi/.creds \
+            -v "$TMP:/home/pi/.creds" \
+            "$IMG" bash -c 'sleep 45'
+          sleep 12
+          # symlinks wired on boot
+          docker exec pi-creds sh -c 'test -L /home/pi/.config/gh' \
+            || { echo "FAIL: ~/.config/gh not a symlink"; exit 1; }
+          docker exec pi-creds sh -c 'test -L /home/pi/.ssh' \
+            || { echo "FAIL: ~/.ssh not a symlink"; exit 1; }
+          docker exec pi-creds sh -c 'test -L /home/pi/.gitconfig' \
+            || { echo "FAIL: ~/.gitconfig not a symlink"; exit 1; }
+          # the pre-seeded host content must be visible through the symlink inside the container
+          docker exec pi-creds sh -c 'grep -q "super-secret" /home/pi/.config/gh/hosts.yml' \
+            || { echo "FAIL: seeded gh host not visible via symlink"; exit 1; }
+          docker exec pi-creds sh -c 'test -f /home/pi/.ssh/id_rsa.pub && grep -q "ssh-rsa" /home/pi/.ssh/id_rsa.pub' \
+            || { echo "FAIL: seeded ssh key not visible via symlink"; exit 1; }
+          # write a NEW credential through the symlink; it must land on the host mount
+          docker exec pi-creds bash -c 'echo "login-new-token" >> /home/pi/.config/gh/hosts.yml'
+          grep -q "login-new-token" "$TMP/gh/hosts.yml" || { echo "FAIL: new cred did not reach host mount"; exit 1; }
+          echo "PASS: credentials wired to PI_CREDS_DIR, survives inside-container login"
+          docker rm -f pi-creds >/dev/null
+
       - name: install.sh gc (cache cleanup)
         run: |
           set -euo pipefail

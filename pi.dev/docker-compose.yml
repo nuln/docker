@@ -21,6 +21,9 @@ services:
       - ./data/cache:/home/pi/cache
       # code project working dir
       - ./data/workspace:/home/pi/dev
+      # login credentials (gh hosts.yml, gitconfig, git-credentials, ssh keys) —
+      # wired as symlinks on every boot so they survive container recreate
+      - ./data/creds:/home/pi/.creds
 
     environment:
       - TZ=${TZ}
@@ -37,6 +40,8 @@ services:
       # pi-watchdog poll interval (s) and crash-loop threshold for the Web UI self-healing monitor
       - PI_WATCHDOG_INTERVAL=${PI_WATCHDOG_INTERVAL:-30}
       - PI_WATCHDOG_MAX_FAILURES=${PI_WATCHDOG_MAX_FAILURES:-3}
+      # designated mount dir that persists gh/git/ssh login credentials across recreate
+      - PI_CREDS_DIR=${PI_CREDS_DIR:-/home/pi/.creds}
       # --- outbound proxy for the whole container (all tools: curl/go/npm/git/...). ---
       # Set HTTP_PROXY/HTTPS_PROXY/ALL_PROXY in .env to route egress through them;
       # NO_PROXY keeps LAN/fnOS hosts on a direct connection. Leave blank to disable.

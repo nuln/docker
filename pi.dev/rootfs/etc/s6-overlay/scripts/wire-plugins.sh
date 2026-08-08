@@ -38,6 +38,42 @@ RUNTIME_UID="${PI_USER_UID:-1000}"
 RUNTIME_GID="${PI_USER_GID:-1000}"
 OUT="$AGENT_DIR/settings.json"
 
+# ---------------------------------------------------------------------------
+# Persist interactive login credentials (gh / git / ssh) into a designated
+# host-mounted directory ($PI_CREDS_DIR, default /home/pi/.creds — mount
+# something like ./data/creds there in compose). The container rootfs is
+# ephemeral: ~/.config/gh, ~/.gitconfig, ~/.git-credentials and ~/.ssh written
+# after login would all be wiped on `docker compose up`. By wiring symlinks
+# into the mount, the real files live on the host and survive recreation.
+# Runs on EVERY boot — deliberately placed before the settings.json early-exit
+# below (that block only concerns itself with wiring baked plugins once).
+# ---------------------------------------------------------------------------
+CREDS_DIR="${PI_CREDS_DIR:-}"
+if [ -n "$CREDS_DIR" ] && [ -d "$CREDS_DIR" ]; then
+  mkdir -p "$CREDS_DIR/gh" "$CREDS_DIR/.ssh"
+  : > "$CREDS_DIR/.gitconfig"
+  : > "$CREDS_DIR/.git-credentials"
+  chown -R "$RUNTIME_UID:$RUNTIME_GID" "$CREDS_DIR" 2>/dev/null || true
+  mkdir -p /home/pi/.config
+  chown "$RUNTIME_UID:$RUNTIME_GID" /home/pi/.config 2>/dev/null || true
+  ln_wire() { # $1 target, $2 source — replace with symlink unless a real file
+    if [ -L "$1" ]; then
+      [ "$(readlink "$1")" = "$2" ] || ln -sfn "$2" "$1"
+    elif [ ! -e "$1" ]; then
+      ln -s "$2" "$1"
+    else
+      echo "[s6:wire-plugins] $1 is a real file — leaving it; not persisted to $CREDS_DIR"
+    fi
+  }
+  ln_wire /home/pi/.config/gh    "$CREDS_DIR/gh"
+  ln_wire /home/pi/.ssh          "$CREDS_DIR/.ssh"
+  ln_wire /home/pi/.gitconfig    "$CREDS_DIR/.gitconfig"
+  ln_wire /home/pi/.git-credentials "$CREDS_DIR/.git-credentials"
+  echo "[s6:wire-plugins] credentials wired -> $CREDS_DIR (gh/git/ssh survive recreate)"
+else
+  echo "[s6:wire-plugins] PI_CREDS_DIR not set/mounted — container login creds will be lost on recreate"
+fi
+
 # Already configured (e.g. user pre-seeded it, or a previous boot) — never touch it.
 if [ -e "$OUT" ]; then
   echo "[s6:wire-plugins] $OUT exists — leaving user config untouched"
