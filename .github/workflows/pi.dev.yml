@@ -493,7 +493,7 @@ jobs:
 
           # === actual self-healing: kill the web daemon, watchdog must relaunch ===
           # daemon cmdline is node .../pi-web-chat/dist/index.js (not literally "pi --web")
-          WEB_PID="$(docker exec pi-hc sh -c 'ps -ef | grep "pi-web-chat" | grep -v grep' | awk '{print $2}' | head -1)"
+          WEB_PID="$(docker exec pi-hc sh -c 'ps -ef | grep "pi-web-chat" | grep -v grep || true' | awk '{print $2}' | head -1)"
           if [ -z "$WEB_PID" ]; then
             echo "WARN: could not find pi-web-chat process; skip self-heal kill (still asserting watchdog presence)"
           else
@@ -503,7 +503,7 @@ jobs:
             RECOVERED=""
             for i in $(seq 1 27); do
               sleep 3
-              NEW_PID="$(docker exec pi-hc sh -c 'ps -ef | grep "pi-web-chat" | grep -v grep' | awk '{print $2}' | head -1)"
+              NEW_PID="$(docker exec pi-hc sh -c 'ps -ef | grep "pi-web-chat" | grep -v grep || true' | awk '{print $2}' | head -1)"
               [ -n "$NEW_PID" ] && [ "$NEW_PID" != "$WEB_PID" ] && { RECOVERED=1; break; }
             done
             [ -n "$RECOVERED" ] || { echo "FAIL: watchdog did not restart web daemon"; docker logs pi-hc 2>&1 | rg 'pi-watchdog' | tail -10; exit 1; }
