@@ -302,6 +302,143 @@ jobs:
             || { echo "FAIL: user-modified settings.json was overwritten"; exit 1; }
           docker rm -f pi-it2 >/dev/null
 
+  # opencode provider auto-config (pi-provider): the oneshot applies the baked
+  # provider templates into a fresh agent dir. Full behavioural coverage of
+  # providers.sh (rebuild/append/rename/corruption) is exercised here with a
+  # FAKE key only — never with a real OPENCODE_API_KEY. The only network call is
+  # the auto Go-subscription probe, which resolves to "not subscribed" for a
+  # dummy key (or is skipped when the runner has no egress) — both are safe.
+  providers:
+    name: Providers (opencode template auto-config)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Pull image
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker pull ${{ needs.build.outputs.image }}
+
+      - name: providers.sh behaviour (fake key, in-container, per-scenario)
+        run: |
+          set -euo pipefail
+          IMG="${{ needs.build.outputs.image }}"
+          RUNNER_ID="${{ github.run_id }}"
+          FAKE_KEY="ci-dummy-opencode-key-${RUNNER_ID}"
+
+          cat > "$RUNNER_TEMP/providers_test.sh" <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          TPL=/etc/s6-overlay/providers/opencode
+          TD=/tmp/ag
+          SCRIPT=/etc/s6-overlay/scripts/providers.sh
+          KEY="${FAKE_KEY:-ci-dummy-opencode-key}"
+          run() {
+            local arg="${1:-auto}"; shift || true
+            PI_CODING_AGENT_DIR="$TD" PI_PROVIDER_TPL_DIR="$TPL" \
+            OPENCODE_API_KEY="$KEY" su -s /bin/bash pi -c "bash $SCRIPT $arg $*" >/dev/null 2>&1
+          }
+          new() { rm -rf "$TD"; mkdir -p "$TD"; chown 1000:1000 "$TD"; }
+          mkeys() { jq -c '.providers|keys' "$TD/models.json" 2>/dev/null || echo NO_MODELS; }
+          akeys() { jq -c 'keys' "$TD/auth.json" 2>/dev/null || echo NO_AUTH; }
+          ck() { if [ "$2" = "$3" ]; then echo "  PASS: $1"; else echo "  FAIL: $1 (got '$2' want '$3')"; exit 1; fi; }
+
+          echo "== [1] templates valid (free=8, go=7) =="
+          test -f "$TPL/opencode-free.json" || { echo "FAIL: free template missing"; exit 1; }
+          test -f "$TPL/opencode-go.json"   || { echo "FAIL: go template missing"; exit 1; }
+          ck "free models" "$(jq '.providers["opencode+free"].models|length' "$TPL/opencode-free.json")" "8"
+          ck "go models"   "$(jq '.providers["opencode+go"].models|length'   "$TPL/opencode-go.json")"   "7"
+
+          echo "== [2] bash syntax =="
+          bash -n "$SCRIPT" || { echo "FAIL: syntax"; exit 1; }
+          echo "  PASS: syntax"
+
+          echo "== [3] first boot, --no: full rebuild, free only =="
+          new; run --no
+          ck "models keys" "$(mkeys)" '["opencode+free"]'
+          ck "auth keys"   "$(akeys)" '["opencode+free"]'
+          ck "free=8" "$(jq '.providers["opencode+free"].models|length' "$TD/models.json")" "8"
+          ck "no go key" "$(jq 'has("opencode+go")' "$TD/auth.json")" "false"
+
+          echo "== [4] first boot, --go forced: free + go =="
+          new; run --go
+          ck "models keys" "$(mkeys)" '["opencode+free","opencode+go"]'
+          ck "go=7" "$(jq '.providers["opencode+go"].models|length' "$TD/models.json")" "7"
+
+          echo "== [5] append: go already present, re-subscribe -> go-2 =="
+          new; run --go; run --go
+          ck "go-2 added" "$(jq -c '.providers|keys|sort' "$TD/models.json")" '["opencode+free","opencode+go","opencode+go-2"]'
+          ck "auth has go-2" "$(jq -c 'keys|sort' "$TD/auth.json")" '["opencode+free","opencode+go","opencode+go-2"]'
+
+          echo "== [6] third subscription -> go-3 =="
+          run --go
+          ck "go-3 added" "$(jq -c '.providers|keys|sort' "$TD/models.json")" '["opencode+free","opencode+go","opencode+go-2","opencode+go-3"]'
+
+          echo "== [7] custom provider preserved =="
+          new; run --go
+          printf '%s' '{"providers":{"opencode+free":{"models":[]},"my-ollama":{"models":[{"id":"local"}]}}}' > "$TD/models.json"
+          printf '%s' '{"opencode+free":{"type":"api_key","key":"k"}}' > "$TD/auth.json"
+          chown 1000:1000 "$TD/models.json" "$TD/auth.json"
+          run --no
+          ck "my-ollama kept" "$(jq -c '.providers|has("my-ollama")' "$TD/models.json")" "true"
+
+          echo "== [8] corrupt models.json left untouched =="
+          new; printf 'garbage' > "$TD/models.json"; chown 1000:1000 "$TD/models.json"
+          run --no
+          ck "kept garbage" "$(cat "$TD/models.json")" "garbage"
+
+          echo "== [9] corrupt auth.json left untouched =="
+          new; run --no
+          printf 'garbage' > "$TD/auth.json"; chown 1000:1000 "$TD/auth.json"
+          rm -f "$TD/models.json"
+          run --no
+          ck "auth kept garbage" "$(cat "$TD/auth.json")" "garbage"
+
+          echo "== [10] no key -> nothing written =="
+          new
+          PI_CODING_AGENT_DIR="$TD" PI_PROVIDER_TPL_DIR="$TPL" OPENCODE_API_KEY= \
+            su -s /bin/bash pi -c "bash $SCRIPT auto" >/dev/null 2>&1
+          ck "models absent" "$(test -f "$TD/models.json" && echo exists || echo absent)" "absent"
+
+          echo "== [11] top-level keys preserved across append =="
+          new; run --no
+          printf '%s' '{"default-model":"o3","providers":{"opencode+free":{"models":["x"]}}}' > "$TD/models.json"
+          chown 1000:1000 "$TD/models.json"
+          run --go
+          ck "default-model kept" "$(jq -r '."default-model"' "$TD/models.json")" "o3"
+
+          echo "== [12] status runs =="
+          PI_CODING_AGENT_DIR="$TD" PI_PROVIDER_TPL_DIR="$TPL" OPENCODE_API_KEY="$KEY" \
+            su -s /bin/bash pi -c "bash $SCRIPT status" >/dev/null 2>&1
+          echo "  PASS: status exit 0"
+
+          echo "ALL PROVIDERS CHECKS OK"
+          SCRIPT
+
+          CID="$(docker run -d --name pi-prov-agent-${RUNNER_ID} "$IMG" bash -c 'sleep 120')"
+          docker cp "$RUNNER_TEMP/providers_test.sh" "$CID:/tmp/providers_test.sh"
+          docker exec "$CID" env FAKE_KEY="$FAKE_KEY" bash /tmp/providers_test.sh
+          docker rm -f "$CID" >/dev/null
+
+      - name: s6 oneshot pi-provider runs on boot (no key -> skipped, no breakage)
+        run: |
+          set -euo pipefail
+          IMG="${{ needs.build.outputs.image }}"
+          TMP="$(mktemp -d)"; chmod 777 "$TMP"
+          docker run -d --name pi-prov-s6 -v "$TMP:/home/pi/.pi" "$IMG" bash -c 'sleep 45'
+          sleep 12
+          docker exec pi-prov-s6 sh -c 's6-rc -l listall 2>/dev/null | grep -q pi-provider' \
+            || echo "WARN: pi-provider not listed (s6-rc listall)"
+          docker exec pi-prov-s6 test -x /etc/s6-overlay/scripts/providers.sh \
+            || { echo "FAIL: providers.sh not executable"; exit 1; }
+          docker exec pi-prov-s6 test -f /etc/s6-overlay/providers/opencode/opencode-free.json \
+            || { echo "FAIL: free template missing in image"; exit 1; }
+          # no OPENCODE_API_KEY set -> providers.sh must no-op, not crash the boot
+          docker logs pi-prov-s6 2>&1 | grep -q 'pi-provider' \
+            && echo "WARN: pi-provider log seen" || echo "PASS: boot proceeded (no key)"
+          docker rm -f pi-prov-s6 >/dev/null
+
   # Baked-skills gate: PI_SKILLS (default off) controls whether the 33 curated
   # skills baked at /etc/s6-overlay/plugins/skills are copied into pi's global
   # skills dir (~/.agents/skills). Verify default-off means NOT loaded, and

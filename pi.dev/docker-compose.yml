@@ -40,6 +40,8 @@ services:
       # pi-watchdog poll interval (s) and crash-loop threshold for the Web UI self-healing monitor
       - PI_WATCHDOG_INTERVAL=${PI_WATCHDOG_INTERVAL:-30}
       - PI_WATCHDOG_MAX_FAILURES=${PI_WATCHDOG_MAX_FAILURES:-3}
+      # opencode provider auto-config: set key -> free always, Go plan probed automatically
+      - OPENCODE_API_KEY=${OPENCODE_API_KEY:-}
       # designated mount dir that persists ALL CLI login credentials across recreate
       # (~/.config, .ssh, .aws, .azure, .docker, .kube + flat dotfiles + cargo/terraform)
       - PI_CREDS_DIR=${PI_CREDS_DIR:-/home/pi/.creds}

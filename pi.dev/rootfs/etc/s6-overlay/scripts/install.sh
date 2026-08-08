@@ -266,6 +266,10 @@ case "${1:-}" in
     shift
     install_gc "$@"
     ;;
+  providers)
+    shift
+    exec /etc/s6-overlay/scripts/providers.sh "${1:-auto}"
+    ;;
   *)
     install_tools "$@"
     ;;
