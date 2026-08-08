@@ -66,6 +66,43 @@ mkdir -p /home/pi/.pi/agent /home/pi/cache /home/pi/dev
 chown -R pi:pi /home/pi
 
 # ---------------------------------------------------------------------------
+# 2b. oh-my-zsh + user shell (as user pi). We bake it into the image layer so
+# every container starts with a richer CLI (syntax highlighting, autosuggest,
+# git aliases) after `docker compose exec -it pi zsh` / a `pi` shell. Default
+# shell of user `pi` is switched to zsh so interactive exec lands in it.
+# ---------------------------------------------------------------------------
+log "oh-my-zsh"
+su -s /bin/bash pi -c '
+  set -euo pipefail
+  ZXD_DIR="$HOME/.oh-my-zsh"
+  if [ ! -d "$ZXD_DIR" ]; then
+    git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git "$ZXD_DIR" >/dev/null 2>&1
+  fi
+  # two batteries-included plugins: syntax highlighting + autosuggestions
+  mkdir -p "$ZXD_DIR/custom/plugins"
+  clone_plg() { [ -d "$ZXD_DIR/custom/plugins/$1" ] || git clone --depth=1 "$2" "$ZXD_DIR/custom/plugins/$1" >/dev/null 2>&1 || true; }
+  clone_plg zsh-syntax-highlighting https://github.com/zsh-users/zsh-syntax-highlighting.git
+  clone_plg zsh-autosuggestions https://github.com/zsh-users/zsh-autosuggestions.git
+  # .zshrc: load the toolchain env (same file pi uses via BASH_ENV) + oh-my-zsh
+  cat > "$HOME/.zshrc" <<'"'"'ZSHRC'"'"'
+# glob with no matches (e.g. no toolchains yet) must not error in zsh
+setopt nonomatch 2>/dev/null || true
+
+# source each toolchain env.sh (same list BASH_ENV uses for pi)
+for __f in /home/pi/cache/*/env.sh; do [ -r "$__f" ] && . "$__f"; done
+[ -f /etc/pi-env.sh ] && . /etc/pi-env.sh
+
+export ZSH="$HOME/.oh-my-zsh"
+ZSH_THEME="robbyrussell"
+plugins=(git zsh-syntax-highlighting zsh-autosuggestions)
+source "$ZSH/oh-my-zsh.sh"
+ZSHRC
+  chmod 644 "$HOME/.zshrc"
+'
+chsh -s /usr/bin/zsh pi
+log "oh-my-zsh installed, pi default shell: zsh"
+
+# ---------------------------------------------------------------------------
 # 3. PATH symlinks + BASH_ENV bootstrap
 # ---------------------------------------------------------------------------
 log "PATH symlinks"

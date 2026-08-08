@@ -548,3 +548,20 @@ jobs:
               && echo "PASS: watchdog status file present" || echo "WARN: no status file"
           fi
           docker rm -f pi-hc >/dev/null
+
+      - name: oh-my-zsh + default shell is zsh
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint bash ${{ needs.build.outputs.image }} <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          shell=$(getent passwd pi | cut -d: -f7)
+          [ "$shell" = "/usr/bin/zsh" ] || { echo "FAIL: pi shell is $shell, expected /usr/bin/zsh"; exit 1; }
+          echo "PASS: pi default shell is $shell"
+          [ -d /home/pi/.oh-my-zsh ] || { echo "FAIL: ~/.oh-my-zsh missing"; exit 1; }
+          [ -d /home/pi/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting ] || { echo "FAIL: highlight plugin missing"; exit 1; }
+          [ -d /home/pi/.oh-my-zsh/custom/plugins/zsh-autosuggestions ] || { echo "FAIL: autosuggest plugin missing"; exit 1; }
+          echo "PASS: oh-my-zsh + plugins present"
+          zsh -c "source /home/pi/.zshrc && echo zsh-ok" >/tmp/zsh.out 2>&1 || { echo "FAIL: .zshrc load failed"; cat /tmp/zsh.out; exit 1; }
+          grep -q zsh-ok /tmp/zsh.out && echo "PASS: .zshrc loads cleanly"
+          SCRIPT

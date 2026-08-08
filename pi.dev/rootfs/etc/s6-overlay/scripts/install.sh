@@ -107,18 +107,30 @@ write_tool_env() {
   } > "$f"
 }
 
-# Writes the `source` snippet importing each tool's env.sh into both ~/.profile (login shells)
-# and ~/.bashrc (interactive non-login shells, e.g. `docker compose exec -it pi bash`), so the
-# installed toolchain environment is available in interactive shells too. Skips if already present.
+# Writes the `source` snippet importing each tool's env.sh into ~/.profile (login shells),
+# ~/.bashrc (interactive non-login bash, e.g. `docker compose exec -it pi bash`) and ~/.zshrc
+# (interactive zsh, the default shell), so installed toolchain environments are available in
+# every interactive shell too. Skips if already present.
+# zsh errors on an unmatched glob (`nomatch`), so the zsh variant opts out of that.
 # pi loads the env via BASH_ENV in non-interactive shells (see setup_bash_env / Dockerfile).
 setup_shell_source() {
   local snippet='for __f in /home/pi/cache/*/env.sh; do [ -r "$__f" ] && . "$__f"; done'
+  local zsnippet='setopt nonomatch 2>/dev/null || true
+for __f in /home/pi/cache/*/env.sh; do [ -r "$__f" ] && . "$__f"; done'
+  # .profile and .bashrc are bash: plain glob (unmatched stays literal, guarded by [ -r ])
   local rc
   for rc in "$HOME/.profile" "$HOME/.bashrc"; do
     touch "$rc" 2>/dev/null || continue
     grep -q 'cache/\*/env.sh' "$rc" 2>/dev/null && continue
-    printf '\n# pi coding tool environment variables (source each tool dir'"'"'s env.sh)\n%s\n' "$snippet" >> "$rc"
+    printf '\n# pi coding tool environment variables (source each tool dir env.sh)\n%s\n' "$snippet" >> "$rc"
   done
+  # .zshrc needs nomatch disabled first (except during our own build bootstrap, where
+  # ~/.oh-my-zsh.sh is what defines the lookup; guard the append to exist)
+  rc="$HOME/.zshrc"
+  if [ -f "$rc" ]; then
+    grep -q 'cache/\*/env.sh' "$rc" 2>/dev/null && return 0
+    printf '\n# pi coding tool environment variables (source each tool env file)\n%s\n' "$zsnippet" >> "$rc"
+  fi
 }
 
 # =============================================================================

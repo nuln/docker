@@ -19,7 +19,7 @@ The image does **not** bundle any compiler toolchain by default. Language enviro
 | `make` / `gcc` | for `install.sh` source builds (lua/php) |
 | `tmux` | pi multi-instance parallel running (official docs recommend it) |
 | `less` | terminal paging / log viewing |
-| `zsh` | alternate shell |
+| `zsh` + oh-my-zsh | default interactive shell for user `pi` — syntax highlighting, autosuggestion and git aliases preinstalled |
 
 All installed during `docker build`; pi is usable immediately after the container starts.
 
@@ -64,6 +64,13 @@ docker compose up
 # Way 2: background, then exec a pi session
 docker compose up -d
 docker compose exec -it pi pi
+```
+
+Interactive shell: user `pi` defaults to **zsh with oh-my-zsh** (syntax
+highlighting + autosuggestions). Enter it with:
+
+```bash
+docker compose exec -it pi zsh
 ```
 
 Skills are baked into the image at `/etc/s6-overlay/plugins/skills` but are
