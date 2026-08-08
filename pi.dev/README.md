@@ -259,7 +259,7 @@ Verified cycle: 1. start -> install go/lua -> `go`/`lua` work in the pi process;
 | `PI_SKILLS` | load baked skills (`true`/whitelist/`false`) | `false` |
 | `PI_WATCHDOG_INTERVAL` | web-UI self-healing poll (s) | `30` |
 | `PI_WATCHDOG_MAX_FAILURES` | back off after N failed restarts (crash-loop guard) | `3` |
-| `PI_CREDS_DIR` | mounted dir persisting **all** login credentials across recreate — `~/.config` (gh/cloud/aws/azure/uv/helm/...), `~/.ssh`, `~/.gitconfig`, `~/.npmrc`, `~/.cargo/credentials.toml`, `~/.docker/config.json`, kubeconfig, plus a **catch-all for any new dot-entry** a tool creates in the container; see `wire-plugins.sh` | `/home/pi/.creds` |
+| `PI_CREDS_DIR` | mounted dir persisting the **whitelisted** login credentials across recreate — `~/.config` (gh/cloud/aws/azure/uv/helm/...), `~/.ssh`, `~/.gitconfig`, `~/.npmrc`, `~/.cargo/credentials.toml`, `~/.docker/config.json`, kubeconfig; add more via `PI_CRED_EXTRA` (see `wire-plugins.sh`) | `/home/pi/.creds` |
 
 ### AI provider accounts
 
