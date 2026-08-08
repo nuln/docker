@@ -259,7 +259,7 @@ Verified cycle: 1. start -> install go/lua -> `go`/`lua` work in the pi process;
 | `PI_SKILLS` | load baked skills (`true`/whitelist/`false`) | `false` |
 | `PI_WATCHDOG_INTERVAL` | web-UI self-healing poll (s) | `30` |
 | `PI_WATCHDOG_MAX_FAILURES` | back off after N failed restarts (crash-loop guard) | `3` |
-| `PI_CREDS_DIR` | designated mount dir persisting gh/git/ssh login credentials across recreate | `/home/pi/.creds` |
+| `PI_CREDS_DIR` | mounted dir persisting **all** login credentials across recreate — `~/.config` (gh/cloud/aws/azure/uv/helm/...), `~/.ssh`, `~/.gitconfig`, `~/.npmrc`, `~/.cargo/credentials.toml`, `~/.docker/config.json`, kubeconfig; see `wire-plugins.sh` | `/home/pi/.creds` |
 
 ### AI provider accounts
 
@@ -286,7 +286,7 @@ Key priority: CLI `--api-key` > `auth.json` > environment variables.
 | `./data/pi` | `/home/pi/.pi` | pi config/state: sessions, auth, web-chat, remote-pi pairing/relay, and plugins the **user** installs later. The preinstalled plugin store is baked into the image at `/home/pi/.pi-plugins` (outside this mount) and referenced by absolute path |
 | `./data/cache` | `/home/pi/cache` | language toolchains (core persistence) |
 | `./data/workspace` | `/home/pi/dev` | code working dir (short dir under home) |
-| `./data/creds` | `/home/pi/.creds` | login credentials — `gh` (`hosts.yml`), `~/.gitconfig`, `~/.git-credentials`, `~/.ssh` are symlinked here on every boot so a container recreate keeps your logins |
+| `./data/creds` | `/home/pi/.creds` | login credentials for **every** CLI (gh/gcloud/aws/azure/uv/helm/rclone, ssh, git, npm/pnpm/bun tokens, docker, cargo, kubeconfig, terraform ...) — symlinked here on every boot so container recreate keeps all your logins |
 
 ## Notes
 

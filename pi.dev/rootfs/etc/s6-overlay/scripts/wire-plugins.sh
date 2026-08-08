@@ -39,37 +39,93 @@ RUNTIME_GID="${PI_USER_GID:-1000}"
 OUT="$AGENT_DIR/settings.json"
 
 # ---------------------------------------------------------------------------
-# Persist interactive login credentials (gh / git / ssh) into a designated
-# host-mounted directory ($PI_CREDS_DIR, default /home/pi/.creds — mount
-# something like ./data/creds there in compose). The container rootfs is
-# ephemeral: ~/.config/gh, ~/.gitconfig, ~/.git-credentials and ~/.ssh written
-# after login would all be wiped on `docker compose up`. By wiring symlinks
-# into the mount, the real files live on the host and survive recreation.
-# Runs on EVERY boot — deliberately placed before the settings.json early-exit
-# below (that block only concerns itself with wiring baked plugins once).
+# Persist session login credentials into a designated host-mounted directory
+# ($PI_CREDS_DIR, default /home/pi/.creds — mount e.g. ./data/creds there in
+# compose). The container rootfs is ephemeral: everything a CLI writes after
+# `gh auth login`, `git config`, docker login, cargo login, npm token, ssh keys,
+# kubeconfig, etc. lives under $HOME and the overlay, so all of it is wiped on
+# `docker compose up`. We re-point those paths at the mount on EVERY boot
+# (before the settings.json early-exit below) with symlinks, so the real bytes
+# live on the host and survive recreation.
+#
+# Coverage (new tools are additive; operator can widen with PI_CRED_EXTRA):
+#   A. whole credential dirs  : ~/.config (gh, gcloud, azure, wrangler,
+#                               uv, helm, rclone, planetscale...), ~/.ssh,
+#                               ~/.aws, ~/.azure, ~/.docker, ~/.kube
+#   B. flat dotfiles at $HOME : ~/.gitconfig, ~/.git-credentials, ~/.netrc,
+#                               ~/.npmrc, ~/.pypirc, ~/.bunfig.toml, ~/.gemrc
+#   C. tool files NOT dirs    : ~/.cargo/credentials.toml (CARGO_HOME is
+#                               redirected into cache, so only creds file),
+#                               ~/.terraform.d/credentials.tfrc.json
+#   D. PI_CRED_EXTRA          : comma-separated ~-relative paths (dir or file)
+# Any real file/dir already present in home is migrated into the mount first.
 # ---------------------------------------------------------------------------
 CREDS_DIR="${PI_CREDS_DIR:-}"
 if [ -n "$CREDS_DIR" ] && [ -d "$CREDS_DIR" ]; then
-  mkdir -p "$CREDS_DIR/gh" "$CREDS_DIR/.ssh"
-  : > "$CREDS_DIR/.gitconfig"
-  : > "$CREDS_DIR/.git-credentials"
-  chown -R "$RUNTIME_UID:$RUNTIME_GID" "$CREDS_DIR" 2>/dev/null || true
-  mkdir -p /home/pi/.config
-  chown "$RUNTIME_UID:$RUNTIME_GID" /home/pi/.config 2>/dev/null || true
-  ln_wire() { # $1 target, $2 source — replace with symlink unless a real file
-    if [ -L "$1" ]; then
-      [ "$(readlink "$1")" = "$2" ] || ln -sfn "$2" "$1"
-    elif [ ! -e "$1" ]; then
-      ln -s "$2" "$1"
-    else
-      echo "[s6:wire-plugins] $1 is a real file — leaving it; not persisted to $CREDS_DIR"
+
+  HOME_DIR=/home/pi
+
+  wire_ln() { # $1 TYPE (dir|file), $2 target, $3 source — symlink target into the mount
+    local type="$1" target="$2" source="$3"
+    if [ -L "$target" ]; then
+      [ "$(readlink "$target")" = "$source" ] || ln -sfn "$source" "$target"
+      return 0
     fi
+    if [ ! -e "$target" ] && [ ! -L "$target" ]; then # absent: create source side, then symlink
+      if [ "$type" = "dir" ]; then
+        mkdir -p "$source" 2>/dev/null || true
+      else
+        mkdir -p "$(dirname "$source")" 2>/dev/null || true
+        : > "$source" || true
+      fi
+      mkdir -p "$(dirname "$target")"
+      ln -s "$source" "$target"
+      return 0
+    fi
+    # real file/dir already present in home (image-baked or written before the
+    # mount existed): move contents into the mount, then symlink.
+    if [ "$type" = "dir" ]; then
+      mkdir -p "$source" 2>/dev/null || true
+      cp -a "$target"/. "$source"/ 2>/dev/null || true
+      rm -rf -- "$target"
+    else
+      mkdir -p "$(dirname "$source")" 2>/dev/null || true
+      cp -a "$target" "$source" 2>/dev/null || true
+      rm -f -- "$target"
+    fi
+    ln -s "$source" "$target"
+    echo "[s6:wire-plugins] migrated existing $target -> $source"
   }
-  ln_wire /home/pi/.config/gh    "$CREDS_DIR/gh"
-  ln_wire /home/pi/.ssh          "$CREDS_DIR/.ssh"
-  ln_wire /home/pi/.gitconfig    "$CREDS_DIR/.gitconfig"
-  ln_wire /home/pi/.git-credentials "$CREDS_DIR/.git-credentials"
-  echo "[s6:wire-plugins] credentials wired -> $CREDS_DIR (gh/git/ssh survive recreate)"
+
+  # A. whole credential/config dirs
+  for d in .config .ssh .aws .azure .docker .kube .wrangler; do
+    wire_ln dir "$HOME_DIR/$d" "$CREDS_DIR/$d"
+  done
+  # B. flat credential dotfiles at $HOME root
+  for f in .gitconfig .git-credentials .netrc .npmrc .pypirc .bunfig.toml .gemrc; do
+    wire_ln file "$HOME_DIR/$f" "$CREDS_DIR/$f"
+  done
+  # C. single credential files inside otherwise-cache/state dirs (dirs stay in place)
+  for f in .cargo/credentials.toml .terraform.d/credentials.tfrc.json; do
+    wire_ln file "$HOME_DIR/$f" "$CREDS_DIR/$(dirname "$f")/$(basename "$f")"
+  done
+  # D. operator extensions (comma separated, ~-relative; dir or file)
+  if [ -n "${PI_CRED_EXTRA:-}" ]; then
+    OIFS=$IFS; IFS=','
+    for p in ${PI_CRED_EXTRA}; do
+      p="$(echo "$p" | tr -d '[:space:]' | sed 's#^~/##; s#^/home/pi/##')"
+      [ -n "$p" ] || continue
+      if [[ "$p" == */ ]]; then
+        wire_ln dir "$HOME_DIR/$p" "$CREDS_DIR/$p"
+      else
+        wire_ln file "$HOME_DIR/$p" "$CREDS_DIR/$p"
+      fi
+    done
+    IFS=$OIFS
+  fi
+
+  chown -R "$RUNTIME_UID:$RUNTIME_GID" "$CREDS_DIR" 2>/dev/null || true
+  echo "[s6:wire-plugins] credentials symlinked into $CREDS_DIR (gh/git/npm/cargo/docker/cloud survive recreate)"
 else
   echo "[s6:wire-plugins] PI_CREDS_DIR not set/mounted — container login creds will be lost on recreate"
 fi

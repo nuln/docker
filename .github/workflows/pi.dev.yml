@@ -438,36 +438,40 @@ jobs:
           echo "PASS: new-project scaffolds go + worker + rust/node/python, placeholders + .tpl stripped"
           docker rm -f pi-scaf >/dev/null
 
-      - name: Credentials persist via PI_CREDS_DIR mount (gh/git/ssh)
+      - name: Credentials persist via PI_CREDS_DIR mount (multi-tool)
         run: |
           set -euo pipefail
           IMG="${{ needs.build.outputs.image }}"
           TMP="$(mktemp -d)"; chmod 777 "$TMP"
-          mkdir -p "$TMP/gh" "$TMP/.ssh"
-          # pre-seed a gh host + ssh key on the HOST mount, as a strictly-persisted login
-          printf 'github.com:\n  oauth_token: super-secret\n  user: ned\n' > "$TMP/gh/hosts.yml"
-          printf 'ssh-rsa AAAA... pi@host\n' > "$TMP/.ssh/id_rsa.pub"
+          mkdir -p "$TMP/.config/gh" "$TMP/.ssh" "$TMP/.docker"
+          # pre-seed credentials on the HOST mount (as if logged in previously)
+          printf 'github.com:\n  oauth_token: tok123\n  user: me\n' > "$TMP/.config/gh/hosts.yml"
+          printf '//registry.npmjs.org/:_authToken=npm-tok\n' > "$TMP/.npmrc"
+          printf '{\n  "auths":{"https://index.docker.io/v1/":{"auth":"ZHVt(secret)"}}\n}\n' > "$TMP/.docker/config.json"
+          printf 'ssh-rsa AAAAB3Nz... pi@host\n' > "$TMP/.ssh/id_rsa.pub"
           docker run -d --name pi-creds \
             -e PI_CREDS_DIR=/home/pi/.creds \
             -v "$TMP:/home/pi/.creds" \
-            "$IMG" bash -c 'sleep 45'
-          sleep 12
-          # symlinks wired on boot
-          docker exec pi-creds sh -c 'test -L /home/pi/.config/gh' \
-            || { echo "FAIL: ~/.config/gh not a symlink"; exit 1; }
-          docker exec pi-creds sh -c 'test -L /home/pi/.ssh' \
-            || { echo "FAIL: ~/.ssh not a symlink"; exit 1; }
-          docker exec pi-creds sh -c 'test -L /home/pi/.gitconfig' \
-            || { echo "FAIL: ~/.gitconfig not a symlink"; exit 1; }
-          # the pre-seeded host content must be visible through the symlink inside the container
-          docker exec pi-creds sh -c 'grep -q "super-secret" /home/pi/.config/gh/hosts.yml' \
-            || { echo "FAIL: seeded gh host not visible via symlink"; exit 1; }
-          docker exec pi-creds sh -c 'test -f /home/pi/.ssh/id_rsa.pub && grep -q "ssh-rsa" /home/pi/.ssh/id_rsa.pub' \
-            || { echo "FAIL: seeded ssh key not visible via symlink"; exit 1; }
-          # write a NEW credential through the symlink; it must land on the host mount
-          docker exec pi-creds bash -c 'echo "login-new-token" >> /home/pi/.config/gh/hosts.yml'
-          grep -q "login-new-token" "$TMP/gh/hosts.yml" || { echo "FAIL: new cred did not reach host mount"; exit 1; }
-          echo "PASS: credentials wired to PI_CREDS_DIR, survives inside-container login"
+            "$IMG" bash -c 'sleep 60'
+          sleep 14
+          # layered symlinks all wired (deep config dirs + flat dotfiles + nested cache files)
+          for L in /home/pi/.config /home/pi/.ssh /home/pi/.docker /home/pi/.npmrc /home/pi/.gitconfig /home/pi/.cargo/credentials.toml; do
+            docker exec pi-creds sh -c "test -L $L" \
+              || { echo "FAIL: $L not symlinked"; exit 1; }
+          done
+          # pre-seeded creds visible through the symlinks inside the container
+          docker exec pi-creds sh -c 'grep -q tok123 /home/pi/.config/gh/hosts.yml' \
+            || { echo "FAIL: gh host not visible via symlink"; exit 1; }
+          docker exec pi-creds sh -c 'grep -q npm-tok /home/pi/.npmrc' \
+            || { echo "FAIL: npmrc not visible via symlink"; exit 1; }
+          docker exec pi-creds sh -c 'grep -q index.docker.io /home/pi/.docker/config.json' \
+            || { echo "FAIL: docker config not visible via symlink"; exit 1; }
+          # write-through: login writes INSIDE container -> lands on host mount
+          docker exec pi-creds bash -c 'echo "//npm.pkg.github.com/:_authToken=ghp_extra" >> /home/pi/.npmrc' 2>/dev/null || true
+          docker exec pi-creds sh -c 'printf "token new-tok\n" > /home/pi/.cargo/credentials.toml'
+          grep -q "ghp_extra" "$TMP/.npmrc" || { echo "FAIL: new npm token did not reach host"; exit 1; }
+          grep -q "new-tok" "$TMP/.cargo/credentials.toml" || { echo "FAIL: cargo credentials did not reach host"; exit 1; }
+          echo "PASS: credentials wired into PI_CREDS_DIR, layered symlinks + write-through confirmed"
           docker rm -f pi-creds >/dev/null
 
       - name: install.sh gc (cache cleanup)
