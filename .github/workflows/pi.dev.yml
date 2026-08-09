@@ -15,6 +15,18 @@ on:
         description: "Pi version to bake (empty = npm latest)"
         required: false
         default: ""
+      s6_version:
+        description: "S6 overlay version to bake (empty = Dockerfile ARG)"
+        required: false
+        default: ""
+      wrangler_version:
+        description: "wrangler version to bake (empty = Dockerfile ARG)"
+        required: false
+        default: ""
+      gh_version:
+        description: "gh CLI version to bake (empty = Dockerfile ARG)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -65,6 +77,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve tool versions (dispatch input > Dockerfile ARG)
+        id: tools
+        run: |
+          ARG() {
+            awk -v k="$1" '$1=="ARG"{split($2,a,"="); if(a[1]==k){print a[2]; exit}}' pi.dev/Dockerfile
+          }
+          S6="${{ github.event.inputs.s6_version }}"; [ -n "$S6" ] || S6=$(ARG S6_OVERLAY_VERSION)
+          WR="${{ github.event.inputs.wrangler_version }}"; [ -n "$WR" ] || WR=$(ARG WRANGLER_VERSION)
+          GH="${{ github.event.inputs.gh_version }}"; [ -n "$GH" ] || GH=$(ARG GH_VERSION)
+          [ -n "$S6" ] && [ -n "$WR" ] && [ -n "$GH" ] || { echo "Could not resolve s6/wrangler/gh versions" >&2; exit 1; }
+          echo "Resolved -> s6=$S6 wrangler=$WR gh=$GH"
+          echo "s6=${S6}" >> "$GITHUB_OUTPUT"
+          echo "wrangler=${WR}" >> "$GITHUB_OUTPUT"
+          echo "gh=${GH}" >> "$GITHUB_OUTPUT"
+
       - name: Build and push pi.dev image (multi-arch)
         uses: docker/build-push-action@v7
         with:
@@ -78,14 +105,38 @@ jobs:
             ghcr.io/nuln/pi.dev:${{ needs.version.outputs.version }}
           build-args: |
             PI_VERSION=${{ needs.version.outputs.version }}
+            S6_OVERLAY_VERSION=${{ steps.tools.outputs.s6 }}
+            WRANGLER_VERSION=${{ steps.tools.outputs.wrangler }}
+            GH_VERSION=${{ steps.tools.outputs.gh }}
           labels: |
             org.opencontainers.image.version=${{ needs.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Smoke test (amd64 default runner)
+      - name: Smoke test & version verification (amd64 default runner)
         run: |
-          docker run --rm --entrypoint bash ${{ env.IMAGE }} -c 'pi --version'
+          docker run --rm --entrypoint bash \
+            -e PI_EXPECT="${{ needs.version.outputs.version }}" \
+            -e WR_EXPECT="${{ steps.tools.outputs.wrangler }}" \
+            -e GH_EXPECT="${{ steps.tools.outputs.gh }}" \
+            ${{ env.IMAGE }} -c '
+            set -euo pipefail
+            GOT="$(pi --version)"
+            case "$GOT" in
+              *"$PI_EXPECT"*) echo "PASS: pi --version=$GOT matches $PI_EXPECT" ;;
+              *) echo "FAIL: pi --version=$GOT != $PI_EXPECT"; exit 1 ;;
+            esac
+            echo "wrangler -> $(wrangler --version)"
+            case "$(wrangler --version)" in
+              *"$WR_EXPECT"*) echo "PASS: wrangler matches $WR_EXPECT" ;;
+              *) echo "WARN: wrangler $(wrangler --version) != $WR_EXPECT" ;;
+            esac
+            echo "gh -> $(gh --version | head -1)"
+            case "$(gh --version | head -1)" in
+              *"$GH_EXPECT"*) echo "PASS: gh matches $GH_EXPECT" ;;
+              *) echo "WARN: gh $(gh --version | head -1) != $GH_EXPECT" ;;
+            esac
+          '
           docker run --rm --entrypoint bash ${{ env.IMAGE }} -c 'jq -e '\''.packages | all(startswith("/home/pi/.pi-plugins/"))'\'' /home/pi/.pi-plugins/settings.json >/dev/null && echo "baked plugins absolute paths ok"'
 
   # Verify each on-demand toolchain installs and runs from a fresh bash -c (BASH_ENV path).
@@ -126,6 +177,8 @@ jobs:
             ${{ needs.build.outputs.image }} -s ${{ matrix.tools }} <<'SCRIPT'
           #!/usr/bin/env bash
           set -euo pipefail
+          # Pinned versions baked into the image (single source of truth)
+          . /etc/s6-overlay/scripts/install.d/versions.env
           for t in "$@"; do
             echo "== installing $t =="
             install.sh "$t"
@@ -137,17 +190,27 @@ jobs:
             bash -c "$bin $*" 2>&1 | head -2 || true
             echo "PASS: $bin"
           }
+          has_ver() { # check <bin> <expected-substring> [args...]
+            local bin="$1" want="$2"; shift 2
+            echo "== version check: $bin wants '$want' =="
+            local got
+            got="$(bash -c "$bin $*" 2>&1 | head -3)"
+            case "$got" in
+              *"$want"*) echo "PASS: $bin  ($got | grep '$want')" ;;
+              *) echo "WARN: $bin output '$got' does not contain '$want' (versions.env drift?)" ;;
+            esac
+          }
           for t in "$@"; do
             case "$t" in
-              go)         check go version ;;
-              rust)       check rustc --version; check cargo --version ;;
-              java)       check java -version ;;
-              bun)        check bun --version ;;
-              scala)      check scala-cli version ;;
-              kotlin)     check kotlin -version ;;
-              node-tools) check tsc --version ;;
-              lua)        check lua -v ;;
-              php)        check php -v ;;
+              go)         check go version;         has_ver go "$GO_VERSION" version ;;
+              rust)       check rustc --version; check cargo --version; has_ver rustc "$RUST_VERSION" --version; has_ver cargo "$RUST_VERSION" --version ;;
+              java)       check java -version; has_ver java "$JAVA_VERSION" -version ;;
+              bun)        check bun --version; has_ver bun "$BUN_VERSION" --version ;;
+              scala)      check scala-cli version; has_ver scala-cli "$SCALA_CLI_VERSION" version ;;
+              kotlin)     check kotlin -version; has_ver kotlin "$KOTLIN_VERSION" -version ;;
+              node-tools) check tsc --version; has_ver tsc "$TYPESCRIPT_VERSION" --version ;;
+              lua)        check lua -v; has_ver lua "$LUA_VERSION" -v ;;
+              php)        check php -v; has_ver php "$PHP_VERSION" -v ;;
               *)          echo "WARN: no assertion defined for $t" ;;
             esac
           done

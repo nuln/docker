@@ -5,67 +5,53 @@ services:
     container_name: pi.dev
 
     ports:
-      # Web UI (pi-web-chat, pi --web) — see PLUGINS.md section 16
+      # Web UI / IM gateway / Feishu callback (change host port via .env)
       - "${PI_WEB_PORT:-3141}:3141"
-      # IM gateway (@gamalan/pi-gateway); @llblab/pi-telegram uses long polling and needs none
       - "${PI_GATEWAY_PORT:-3847}:3847"
-      # Feishu/Lark card callback (FEISHU_CARD_ACTION_WEBHOOK_PORT defaults to 3001)
       - "${PI_FEISHU_PORT:-3001}:3001"
-      # remote-pi relay (map when self-hosting; adjust to your custom port)
-      # - "${PI_RELAY_PORT:-3030}:3030"
+      # - "${PI_RELAY_PORT:-3030}:3030"   # remote-pi relay (self-host only)
 
     volumes:
-      # pi config/state (~/.pi); the preinstalled plugin store stays baked in the image
+      # pi config/state + toolchain caches + code workspace + persisted CLI logins
       - ./data/pi:/home/pi/.pi
-      # on-demand language toolchains (Go/Rust/Java/...)
       - ./data/cache:/home/pi/cache
-      # code project working dir
       - ./data/workspace:/home/pi/dev
-      # ALL CLI login credentials (~/.config, ssh, aws, git, npm, docker, cargo...) —
-      # symlinked into this dir on every boot so container recreate keeps your logins
       - ./data/creds:/home/pi/.creds
 
     environment:
       - TZ=${TZ}
-      - PI_CODING_AGENT_DIR=/home/pi/.pi/agent
-      # auto-start the Web UI daemon on container start; set 0 to disable
-      - PI_AUTOSTART_WEB=${PI_AUTOSTART_WEB:-1}
-# first-boot permission policy for pi-permission-system. Empty = don't seed
-      # (plugin default). Set to allow|ask|default|deny|hardened to seed that baked
-      # policy. An existing config in the mount always wins.
-      - PI_PERMISSION_SYSTEM_POLICY=${PI_PERMISSION_SYSTEM_POLICY:-}
-      # bake the curated skills (s6-overlay/plugins/skills) into ~/.agents/skills
-      # on first boot. true = all 33; "a,b,c" = whitelist only; false/empty = none.
+      # Web UI autostart (true=on/false=off); skills whitelist; first-boot permission policy
+      - PI_AUTOSTART_WEB=${PI_AUTOSTART_WEB:-true}
       - PI_SKILLS=${PI_SKILLS:-false}
-      # pi-watchdog poll interval (s) and crash-loop threshold for the Web UI self-healing monitor
-      - PI_WATCHDOG_INTERVAL=${PI_WATCHDOG_INTERVAL:-30}
-      - PI_WATCHDOG_MAX_FAILURES=${PI_WATCHDOG_MAX_FAILURES:-3}
+      - PI_PERMISSION_SYSTEM_POLICY=${PI_PERMISSION_SYSTEM_POLICY:-}
       # opencode provider auto-config: set key -> free always, Go plan probed automatically
       - OPENCODE_API_KEY=${OPENCODE_API_KEY:-}
-      # designated mount dir that persists ALL CLI login credentials across recreate
-      # (~/.config, .ssh, .aws, .azure, .docker, .kube + flat dotfiles + cargo/terraform)
+      # credential persistence mount (scans baked whitelist; extra ~-relative
+      # paths can be persisted via the internal default PI_CRED_EXTRA)
       - PI_CREDS_DIR=${PI_CREDS_DIR:-/home/pi/.creds}
-      # extra ~-relative credential paths to persist (comma separated, dir or file)
-      - PI_CRED_EXTRA=${PI_CRED_EXTRA:-}
-      # --- outbound proxy for the whole container (all tools: curl/go/npm/git/...). ---
-      # Set HTTP_PROXY/HTTPS_PROXY/ALL_PROXY in .env to route egress through them;
-      # NO_PROXY keeps LAN/fnOS hosts on a direct connection. Leave blank to disable.
+      # outbound proxy for the whole container (blank = off)
       - HTTP_PROXY=${HTTP_PROXY:-}
       - HTTPS_PROXY=${HTTPS_PROXY:-}
       - ALL_PROXY=${ALL_PROXY:-}
       - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,::1}
-      # conservative resource limits for a weak host (e.g. Intel J3455)
-      - CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-1}
-      - GOMAXPROCS=${GOMAXPROCS:-2}
-      - MAKEFLAGS=${MAKEFLAGS:--j2}
 
     working_dir: /home/pi/dev
 
-    # the TUI needs a TTY
+    # TUI needs a TTY
     stdin_open: true
     tty: true
 
-    # overall container resource cap
+    # container hardening: no privileged caps, no priv escalation. s6 + pi +
+    # installed toolchains all run as the unprivileged `pi` user (uid 1000);
+    # the root init only supervises services, so no capabilities are required.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+
+    # overall resource cap
     mem_limit: ${MEM_LIMIT:-4g}
     cpus: ${CPU_LIMIT:-2}
 

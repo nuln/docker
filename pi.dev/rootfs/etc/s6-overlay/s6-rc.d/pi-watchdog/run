@@ -14,8 +14,9 @@
 #     (it keeps polling every interval but no longer relaunches blind), so a
 #     permanently broken web daemon can't spin the CPU.
 #
-# Disabled with PI_AUTOSTART_WEB=0 (same flag that disables pi-web). Runs as
-# root (s6), drops to the pi user to relaunch pi --web, honoring PI_WEB_ARGS.
+# Disabled with PI_AUTOSTART_WEB=false (same flag that disables pi-web). Runs as
+# root (s6), drops to the pi user to relaunch pi --web, honoring PI_WEB_ARGS
+# (space-separated, no quotes).
 # =============================================================================
 set -uo pipefail
 
@@ -30,7 +31,7 @@ read -r -a WEB_ARGS <<< "${PI_WEB_ARGS:---lan}"
 
 STATUS_FILE="$AGENT_DIR/pi-watchdog.json"
 
-if [ "${PI_AUTOSTART_WEB:-1}" != "1" ]; then
+if [ "${PI_AUTOSTART_WEB:-true}" != "true" ]; then
   while :; do sleep 3600; done
 fi
 
@@ -86,6 +87,9 @@ while :; do
   fi
 
   log "web UI down on :$PORT (real restart count $RESTARTS) — relaunching"
+  {
+    echo "--- [s6:pi-watchdog] relaunch $(date -Is) ---"
+  } >> "$AGENT_DIR/pi-web.log"
   setpriv --reuid="$RUNTIME_UID" --regid="$RUNTIME_GID" --init-groups /usr/bin/env \
     HOME="$RUNTIME_HOME" \
     PI_CODING_AGENT_DIR="$AGENT_DIR" \

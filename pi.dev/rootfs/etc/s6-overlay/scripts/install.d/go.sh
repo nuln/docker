@@ -10,20 +10,19 @@
 
 install_go() {
   local dir="$CACHE/go"
+  local ver="${GO_VERSION:-1.26.5}"
   if [ "$FORCE" -eq 0 ] && [ -x "$dir/bin/go" ]; then
     log "Go already installed (skip download)"
   else
     [ "$FORCE" -eq 1 ] && rm -rf "$dir"
     mkdir -p "$dir"
-    log "Downloading and installing Go (extract to $dir)..."
-    curl -fsSL https://go.dev/dl/?mode=json -o /tmp/golang-dl.json
-    GO_VER="$(awk -F'"' '/"version":/{gsub(/^go/,"",$4); print $4; exit}' /tmp/golang-dl.json)"
-    TMP="/tmp/go-${GO_VER}.linux-${GO_ARCH}.tar.gz"
-    curl -fsSL "https://go.dev/dl/go${GO_VER}.linux-${GO_ARCH}.tar.gz" -o "$TMP"
+    log "Downloading and installing Go ${ver} (extract to $dir)..."
+    TMP="/tmp/go-${ver}.linux-${GO_ARCH}.tar.gz"
+    curl -fsSL "https://go.dev/dl/go${ver}.linux-${GO_ARCH}.tar.gz" -o "$TMP"
     # Extract directly to the target dir, strip the top-level go/ prefix, no symlinks
     tar -C "$dir" -xzf "$TMP" --strip-components=1
-    rm -f "$TMP" /tmp/golang-dl.json
-    log "Go $GO_VER installed${UPDATED_TAG}"
+    rm -f "$TMP"
+    log "Go $ver installed${UPDATED_TAG}"
   fi
   write_tool_env "$dir" \
     "GOROOT=$dir" \

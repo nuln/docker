@@ -10,13 +10,14 @@
 
 install_node_tools() {
   local dir="$CACHE/npm-global"
+  local ver="${TYPESCRIPT_VERSION:-7.0.2}"
   if [ "$FORCE" -eq 0 ] && [ -x "$dir/bin/tsc" ]; then
     log "TypeScript already installed (skip download)"
   else
     mkdir -p "$dir"
-    log "Installing TypeScript (npm --prefix $dir)..."
-    if [ "$FORCE" -eq 1 ]; then npm i -g --prefix "$dir" typescript@latest; else npm i -g --prefix "$dir" typescript; fi
-    log "TypeScript installed${UPDATED_TAG}"
+    log "Installing TypeScript ${ver} (npm --prefix $dir)..."
+    npm i -g --prefix "$dir" "typescript@${ver}"
+    log "TypeScript ${ver} installed${UPDATED_TAG}"
   fi
   write_tool_env "$dir" \
     "npm_config_cache=$CACHE/npm" \

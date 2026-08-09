@@ -10,18 +10,16 @@
 
 install_bun() {
   local dir="$CACHE/bun"
+  local ver="${BUN_VERSION:-1.3.14}"
   if [ "$FORCE" -eq 0 ] && [ -x "$dir/bin/bun" ]; then
     log "Bun already installed (skip download)"
   else
     [ "$FORCE" -eq 1 ] && rm -rf "$dir"
     mkdir -p "$dir"
-    log "Downloading and installing Bun (extract to $dir)..."
-    curl -fsSL https://api.github.com/repos/oven-sh/bun/releases/latest -o /tmp/bun-rel.json
-    BUN_VER="$(awk -F'"' '/"tag_name":/{gsub(/^bun-v/,"",$4); print $4; exit}' /tmp/bun-rel.json)"
-    rm -f /tmp/bun-rel.json
+    log "Downloading and installing Bun ${ver} (extract to $dir)..."
     BUN_ARCH="$GO_ARCH"; [ "$BUN_ARCH" = arm64 ] && BUN_ARCH=aarch64; [ "$BUN_ARCH" = amd64 ] && BUN_ARCH=x64
-    TMP="/tmp/bun-${BUN_VER}.linux-${GO_ARCH}.zip"
-    curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VER}/bun-linux-${BUN_ARCH}.zip" -o "$TMP"
+    TMP="/tmp/bun-${ver}.linux-${GO_ARCH}.zip"
+    curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v${ver}/bun-linux-${BUN_ARCH}.zip" -o "$TMP"
     ( cd "$dir" && unzip -oq "$TMP" )
     rm -f "$TMP"
     # Unzip yields bun-linux-<arch>/bun; move it to dir/bin for PATH (dir name not fixed, locate via find)
@@ -33,7 +31,7 @@ install_bun() {
       chmod +x "$dir/bin/bun"
     fi
     rm -rf "$dir"/bun-linux-* 2>/dev/null || true
-    log "Bun $BUN_VER installed${UPDATED_TAG}"
+    log "Bun $ver installed${UPDATED_TAG}"
   fi
   write_tool_env "$dir" \
     "PATH=$dir/bin:\$PATH"

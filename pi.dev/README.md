@@ -32,9 +32,29 @@ All installed during `docker build`; pi is usable immediately after the containe
 
 ## Build
 
+Versions are overridable at build time via `--build-arg` (no Dockerfile edit needed):
+`PI_VERSION`, `S6_OVERLAY_VERSION`, `WRANGLER_VERSION`, `GH_VERSION`. Pin the
+release by setting `PI_VERSION`; the others default sensibly.
+
 ```bash
-# local build (pinned by default; bump PI_VERSION in Dockerfile for a new release)
+# build a specific release (tag follows PI_VERSION):
+docker build --build-arg PI_VERSION=0.84.1 -t pi.dev:0.84.1 .
+
+# minimal local build (wrangler/gh/s6 use their Dockerfile defaults):
 docker build -t pi.dev:0.84.1 .
+
+# everything pinned explicitly:
+docker build --build-arg PI_VERSION=0.84.1 \
+             --build-arg S6_OVERLAY_VERSION=3.2.0.0 \
+             --build-arg WRANGLER_VERSION=4.120.0 \
+             --build-arg GH_VERSION=v2.97.0 \
+             -t pi.dev:0.84.1 .
+```
+
+Then point compose at it via `PI_IMAGE` in `.env`:
+```bash
+# .env:  PI_IMAGE=pi.dev:0.84.1
+docker compose up -d
 ```
 
 ## Usage
@@ -123,7 +143,10 @@ docker compose exec pi install.sh lua php
 # DB / storage CLI clients (MySQL, PostgreSQL, Redis, SQLite, MinIO client)
 docker compose exec pi install.sh db-clients
 
-# Update installed Go to latest (--update forces reinstall)
+# Every toolchain is installed at an explicitly pinned version from
+# `install.d/versions.env` — nothing installs "latest". To move a toolchain, bump
+# the pin and rebuild the image (`docker build pi.dev/`); --update just reinstalls
+# that same pinned version.
 docker compose exec pi install.sh go --update
 ```
 
@@ -150,16 +173,16 @@ the substitution + suffix stripped) and rebuilding the image.
 
 ### Healthcheck
 
-The image declares a `HEALTHCHECK`; with the default `PI_AUTOSTART_WEB=1` the
+The image declares a `HEALTHCHECK`; with the default `PI_AUTOSTART_WEB=true` the
 container is healthy once the Web UI answers on `:3141`, so `docker compose
-ps` shows the real boot state. Set `PI_AUTOSTART_WEB=0` and it degrades to a
+ps` shows the real boot state. Set `PI_AUTOSTART_WEB=false` and it degrades to a
 liveness check (never falsely marks the box sick just because the UI is off).
 
 A **pi-watchdog** s6 longrun supervises the Web UI daemon: if `:3141` stops
 answering (and autostart is on) it restarts `pi --web` automatically, honoring
-`PI_WEB_ARGS`. Tune the poll with `PI_WATCHDOG_INTERVAL` (default 30s). It
+`PI_WEB_ARGS`. It polls every 30s by default. It
 tracks restart count + crash-loop state in `~/.pi/agent/pi-watchdog.json`, and
-after `PI_WATCHDOG_MAX_FAILURES` (default 3) consecutive failed restarts it
+after 3 consecutive failed restarts (default) it
 backs off instead of relaunching blindly.
 
 ### Inspect loaded skills (`skills`)
@@ -186,7 +209,7 @@ docker compose exec pi install.sh gc --all    # remove every cached toolchain
 
 pi has a huge plugin catalog (the official catalog has 5000+ packages, categorized by download count in [PLUGINS.md](PLUGINS.md)). The curated set is **preinstalled in the image by default** (baked into `/home/pi/.pi-plugins`, wired into the mounted `data/pi` on first start), so the box is usable immediately — no install step.
 
-**Web UI (usable right away):** the s6 service `pi-web` auto-starts `pi --web --lan` on container start, so open `http://<host>:3141` in a browser after `docker compose up -d`. Control it with `docker compose exec pi pi --web status|stop|restart`. Disable the autostart with `PI_AUTOSTART_WEB=0` in `.env`.
+**Web UI (usable right away):** the s6 service `pi-web` auto-starts `pi --web --lan` on container start, so open `http://<host>:3141` in a browser after `docker compose up -d`. Control it with `docker compose exec pi pi --web status|stop|restart`. Disable the autostart with `PI_AUTOSTART_WEB=false` in `.env`.
 
 **remote-pi (phone control):** the extension is preinstalled. In a pi session run `/remote-pi` (first time answers the wizard: agent name, session, auto-start relay) then `/remote-pi pair` and scan the QR with the Remote Pi mobile app. Pairing/relay config persist in `data/pi/remote`.
 
@@ -203,7 +226,7 @@ docker compose exec pi pi update --extensions        # update
 docker compose exec pi pi list                       # list installed
 ```
 
-To change which plugins ship by default, edit the arrays in section "4. pi plugins" of `install.sh` and rebuild the image.
+To change which plugins ship by default (and their pinned versions), edit the versioned arrays in `install.d/plugins.sh` and the pin values in `install.d/versions.env`, then rebuild the image. Every curated plugin is pinned — nothing installs "latest".
 
 **IM channel setup (each channel has its own bot credentials):**
 
@@ -259,14 +282,12 @@ Verified cycle: 1. start -> install go/lua -> `go`/`lua` work in the pi process;
 |----------|-------------|---------|
 | `TZ` | timezone | `Asia/Shanghai` |
 | `PI_IMAGE` | image name | `ghcr.io/nuln/pi.dev:0.84.1` |
-| `CARGO_BUILD_JOBS` | Rust parallel build jobs | `1` |
-| `GOMAXPROCS` | Go parallelism | `2` |
-| `MAKEFLAGS` | make parallelism | `-j2` |
 | `MEM_LIMIT` / `CPU_LIMIT` | container memory/CPU caps | `4g` / `2` |
 | `PI_SKILLS` | load baked skills (`true`/whitelist/`false`) | `false` |
-| `PI_WATCHDOG_INTERVAL` | web-UI self-healing poll (s) | `30` |
-| `PI_WATCHDOG_MAX_FAILURES` | back off after N failed restarts (crash-loop guard) | `3` |
-| `PI_CREDS_DIR` | mounted dir persisting the **whitelisted** login credentials across recreate — `~/.config` (gh/cloud/aws/azure/uv/helm/...), `~/.ssh`, `~/.gitconfig`, `~/.npmrc`, `~/.cargo/credentials.toml`, `~/.docker/config.json`, kubeconfig; add more via `PI_CRED_EXTRA` (see `wire-plugins.sh`) | `/home/pi/.creds` |
+| `PI_AUTOSTART_WEB` | auto-start the Web UI daemon on container start | `true` |
+| `PI_SKILLS` | load baked skills (`true`/whitelist/`false`) | `false` |
+| `PI_AUTOSTART_WEB` | auto-start the Web UI daemon on container start | `true` |
+| `PI_CREDS_DIR` | mounted dir persisting **whitelisted** login credentials across recreate — credential dot-dirs under `~/.config` (gh/gcloud/aws/azure/uv/helm/rclone/wrangler/...), `~/.ssh`, `~/.aws`, `~/.azure`, `~/.docker`, `~/.kube`, flat dotfiles (`~/.gitconfig`/`~/.git-credentials`/`~/.npmrc`/`~/.pypirc`/`~/.bunfig.toml`), `~/.cargo/credentials.toml`; whitelist is baked — see `wire-plugins.sh` | `/home/pi/.creds` |
 
 ### AI provider accounts
 

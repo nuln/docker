@@ -14,17 +14,15 @@ install_kotlin() {
     install_java
   fi
   local dir="$CACHE/kotlin"
+  local ver="${KOTLIN_VERSION:-2.4.10}"
   if [ "$FORCE" -eq 0 ] && [ -x "$dir/kotlinc/bin/kotlin" ]; then
     log "Kotlin already installed (skip download)"
   else
     [ "$FORCE" -eq 1 ] && rm -rf "$dir"
     mkdir -p "$dir"
-    log "Downloading and installing Kotlin (extract to $dir)..."
-    curl -fsSL https://api.github.com/repos/JetBrains/kotlin/releases/latest -o /tmp/kotlin-rel.json
-    KOTLIN_VER="$(awk -F'"' '/"tag_name":/{gsub(/^v/,"",$4); print $4; exit}' /tmp/kotlin-rel.json)"
-    rm -f /tmp/kotlin-rel.json
-    TMP="/tmp/kotlin-${KOTLIN_VER}.zip"
-    curl -fsSL "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VER}/kotlin-compiler-${KOTLIN_VER}.zip" -o "$TMP"
+    log "Downloading and installing Kotlin ${ver} (extract to $dir)..."
+    TMP="/tmp/kotlin-${ver}.zip"
+    curl -fsSL "https://github.com/JetBrains/kotlin/releases/download/v${ver}/kotlin-compiler-${ver}.zip" -o "$TMP"
     ( cd "$dir" && unzip -oq "$TMP" )
     rm -f "$TMP"
     # The zip's top-level dir name is not fixed (e.g. kotlinc/); its bin/kotlin must keep lib alongside,
@@ -35,7 +33,7 @@ install_kotlin() {
       rm -rf "$dir/kotlinc"
       mv "$top" "$dir/kotlinc"
     fi
-    log "Kotlin $KOTLIN_VER installed${UPDATED_TAG}"
+    log "Kotlin $ver installed${UPDATED_TAG}"
   fi
   write_tool_env "$dir" \
     "PATH=$dir/kotlinc/bin:\$PATH"

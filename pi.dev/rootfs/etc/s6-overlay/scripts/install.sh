@@ -20,13 +20,15 @@
 # Usage (in the container, or from the host via `docker compose exec pi install.sh ...`):
 #   install.sh setup-bash-env            build-time only (run as root, see setup_bash_env)
 #   install.sh go rust node-tools        install language toolchains on demand (independent)
-#   install.sh go --update               force reinstall/update to latest
+#   install.sh go --update               force reinstall to the PINNED version (reproducible builds)
 #   install.sh plugins --core            install only the core plugin group
 #   install.sh plugins all               install all plugin groups
 #   install.sh --help                    show full usage
 #
 # Notes:
 #   - Safe to re-run: already-installed toolchains/plugins are skipped; --update forces reinstall.
+#   - Every toolchain and plugin is pinned to an explicit version in
+#     install.d/versions.env (and plugins.sh) — nothing installs "latest".
 #   - `pi install` accepts one source at a time, so plugins are installed one-by-one; a single
 #     failure does not abort the rest.
 #   - Plugins are installed per group, one plugin per category, to avoid tool-name collisions.
@@ -38,6 +40,17 @@ CACHE="${PI_CACHE:-/home/pi/cache}"
 INSTALL_D="${PI_INSTALL_D:-/etc/s6-overlay/scripts/install.d}"
 
 log() { echo "[install] $*"; }
+
+# =============================================================================
+# Pinned versions — single source of truth. Every install.d/* installer reads
+# its version from here (never "latest"). An already-set env var (e.g. a Docker
+# --build-arg) wins over the pinned default.
+# =============================================================================
+if [ -r "$INSTALL_D/versions.env" ]; then
+  . "$INSTALL_D/versions.env"
+else
+  echo "[install] WARN: $INSTALL_D/versions.env missing — relying on per-tool defaults" >&2
+fi
 
 # =============================================================================
 # 1. Args and architecture detection
@@ -77,8 +90,12 @@ USAGE
   cat <<'USAGE'
 
   [options]
-    --update, -u   force reinstall/update language toolchains to latest (default skips if installed)
+    --update, -u   force reinstall language toolchains to the PINNED version in versions.env
+                   (default skips if already installed)
     --help, -h     show this help
+
+  [cache maintenance]
+    gc, clean      list cached toolchains, or remove specific/all ones
 
   [examples]
     install.sh go rust node-tools        # install Go + Rust + TypeScript

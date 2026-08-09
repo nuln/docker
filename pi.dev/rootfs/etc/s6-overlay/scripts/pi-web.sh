@@ -2,9 +2,10 @@
 # =============================================================================
 # pi-web — s6 oneshot service: auto-start the Web UI daemon (pi --web --lan)
 #
-# Enabled by default; PI_AUTOSTART_WEB=0 disables it (the service then just
+# Enabled by default; PI_AUTOSTART_WEB=false disables it (the service then just
 # completes without doing anything). PI_WEB_ARGS can override the default --lan
-# (e.g. "3200 --host 0.0.0.0").
+# (space-separated, no quotes — e.g. "3100 --host 0.0.0.0" is written as
+# PI_WEB_ARGS=3100 --host 0.0.0.0).
 #
 # s6's /init runs this as root, so we switch to the container user (pi, uid 1000)
 # before launching (setpriv from util-linux — always present on Debian bookworm,
@@ -17,8 +18,8 @@
 # =============================================================================
 set -euo pipefail
 
-if [ "${PI_AUTOSTART_WEB:-1}" != "1" ]; then
-  echo "[s6:pi-web] disabled (PI_AUTOSTART_WEB=0)"
+if [ "${PI_AUTOSTART_WEB:-true}" != "true" ]; then
+  echo "[s6:pi-web] disabled (PI_AUTOSTART_WEB=false)"
   exit 0
 fi
 
@@ -34,7 +35,8 @@ fi
 
 read -r -a WEB_ARGS <<< "${PI_WEB_ARGS:---lan}"
 mkdir -p "$AGENT_DIR"
-touch "$AGENT_DIR/pi-web.log"
+# keep only the current boot's web output (relaunches append; no unbounded growth)
+: > "$AGENT_DIR/pi-web.log"
 chown "$RUNTIME_UID:$RUNTIME_GID" "$AGENT_DIR" "$AGENT_DIR/pi-web.log" 2>/dev/null || true
 
 # Drop to the pi user, preserve the container environment, launch the Web UI daemon.

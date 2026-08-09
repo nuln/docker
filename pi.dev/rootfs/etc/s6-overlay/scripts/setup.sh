@@ -11,8 +11,18 @@
 # =============================================================================
 set -euo pipefail
 
+INSTALL_D="${PI_INSTALL_D:-/etc/s6-overlay/scripts/install.d}"
+if [ -r "$INSTALL_D/versions.env" ]; then
+  . "$INSTALL_D/versions.env"
+else
+  echo "[setup] WARN: $INSTALL_D/versions.env missing" >&2
+fi
+
 S6_OVERLAY_VERSION="${S6_OVERLAY_VERSION:-3.2.0.0}"
-PI_VERSION="${PI_VERSION:-latest}"
+PI_VERSION="${PI_VERSION:-0.84.1}"
+# Pinned via versions.env for reproducible builds (fallback = current stable).
+WRANGLER_VERSION="${WRANGLER_VERSION:-4.120.0}"
+GH_VERSION="${GH_VERSION:-v2.97.0}"
 TARGETARCH="${TARGETARCH:-amd64}"
 
 log() { printf '\n== [setup] %s ==\n' "$*"; }
@@ -22,7 +32,7 @@ log() { printf '\n== [setup] %s ==\n' "$*"; }
 # ---------------------------------------------------------------------------
 log "apt tools"
 apt-get update
-apt-get install -y --no-install-recommends make git zsh ca-certificates curl ripgrep tmux less xz-utils jq
+apt-get install -y --no-install-recommends make git zsh ca-certificates curl ripgrep tmux less xz-utils jq tzdata
 rm -rf /var/lib/apt/lists/*
 
 userdel node
@@ -43,19 +53,19 @@ rm -f /tmp/s6-noarch.tar.xz /tmp/s6-arch.tar.xz
 # 2. pi CLIs + user
 # ---------------------------------------------------------------------------
 log "pi CLI + remote-pi CLI"
-npm i -g "@earendil-works/pi-coding-agent@${PI_VERSION}" remote-pi \
+npm i -g "@earendil-works/pi-coding-agent@${PI_VERSION}" "remote-pi@${REMOTE_PI_VERSION:-0.5.5}" \
     --allow-scripts=@google/genai,protobufjs,remote-pi
 
-log "wrangler CLI (Cloudflare)"
-npm i -g wrangler
+log "wrangler CLI (Cloudflare), pinned ${WRANGLER_VERSION}"
+npm i -g "wrangler@${WRANGLER_VERSION}"
 
-log "GitHub CLI (gh)"
+log "GitHub CLI (gh, ${GH_VERSION})"
 case "${TARGETARCH:-amd64}" in
   amd64) GH_ARCH=amd64 ;;
   arm64) GH_ARCH=arm64 ;;
   *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;;
 esac
-GH_VER="$(curl -fsSL "https://api.github.com/repos/cli/cli/releases/latest" | jq -r .tag_name)"
+GH_VER="${GH_VERSION}"
 curl -fsSL "https://github.com/cli/cli/releases/download/${GH_VER}/gh_${GH_VER#v}_linux_${GH_ARCH}.tar.gz" -o /tmp/gh.tar.gz
 tar -C /usr/local -xzf /tmp/gh.tar.gz --strip-components=1 "gh_${GH_VER#v}_linux_${GH_ARCH}/bin/gh"
 rm -f /tmp/gh.tar.gz
@@ -75,14 +85,21 @@ log "oh-my-zsh"
 su -s /bin/bash pi -c '
   set -euo pipefail
   ZXD_DIR="$HOME/.oh-my-zsh"
+  OMZ_COMMIT="${OMZ_COMMIT:-99aaf58d007f1378d1e0609bcd9baf8abbbaf327}"
+  ZSH_SYNTAX_VERSION="${ZSH_SYNTAX_VERSION:-0.8.0}"
+  ZSH_AUTOSUGGEST_VERSION="${ZSH_AUTOSUGGEST_VERSION:-0.7.1}"
+  # oh-my-zsh is a rolling repo (no release tags): pin the exact master commit.
   if [ ! -d "$ZXD_DIR" ]; then
-    git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git "$ZXD_DIR" >/dev/null 2>&1
+    git init -q "$ZXD_DIR"
+    git -C "$ZXD_DIR" remote add origin https://github.com/ohmyzsh/ohmyzsh.git
+    git -C "$ZXD_DIR" fetch -q --depth=1 origin "$OMZ_COMMIT"
+    git -C "$ZXD_DIR" checkout -q FETCH_HEAD
   fi
-  # two batteries-included plugins: syntax highlighting + autosuggestions
+  # two batteries-included plugins: syntax highlighting + autosuggestions (pinned tags)
   mkdir -p "$ZXD_DIR/custom/plugins"
-  clone_plg() { [ -d "$ZXD_DIR/custom/plugins/$1" ] || git clone --depth=1 "$2" "$ZXD_DIR/custom/plugins/$1" >/dev/null 2>&1 || true; }
-  clone_plg zsh-syntax-highlighting https://github.com/zsh-users/zsh-syntax-highlighting.git
-  clone_plg zsh-autosuggestions https://github.com/zsh-users/zsh-autosuggestions.git
+  clone_plg() { [ -d "$ZXD_DIR/custom/plugins/$1" ] || git clone -q --depth=1 --branch "$3" "$2" "$ZXD_DIR/custom/plugins/$1" || true; }
+  clone_plg zsh-syntax-highlighting https://github.com/zsh-users/zsh-syntax-highlighting.git "$ZSH_SYNTAX_VERSION"
+  clone_plg zsh-autosuggestions https://github.com/zsh-users/zsh-autosuggestions.git "v${ZSH_AUTOSUGGEST_VERSION}"
   # .zshrc: load the toolchain env (same file pi uses via BASH_ENV) + oh-my-zsh
   # Use the ABSOLUTE path (not $HOME) so sourcing it works for any user incl.
   # root (CI validation, docker exec) — $HOME here would point at /root.
@@ -121,11 +138,35 @@ log "BASH_ENV bootstrap"
 # ---------------------------------------------------------------------------
 log "bake curated plugins"
 su -s /bin/bash pi -c '/usr/local/bin/install.sh plugins all'
-sed -i -E 's|"npm:([^"]+)"|"/home/pi/.pi-plugins/npm/node_modules/\1"|g' \
-    /home/pi/.pi/agent/settings.json
+# Rewrite plugin refs from relative "npm:" to absolute store paths. The store
+# root is derived from the FIRST generated package path (never hardcoded), so
+# it tracks pi's actual npm layout across package-manager changes. The derived
+# root is persisted to /etc/s6-overlay/store-path for wire-plugins to consume.
+SETTINGS=/home/pi/.pi/agent/settings.json
+# Rewrite plugin refs from relative "npm:" (possibly "@scope/name@ver") to absolute
+# store paths. Strip the @version suffix first (the on-disk dir keeps no version;
+# /home/pi/.pi-plugins/npm/node_modules/<name>). The store root is derived from the
+# FIRST generated package path (never hardcoded), so it tracks pi's actual npm
+# layout across package-manager changes. The derived root is persisted to
+# /etc/s6-overlay/store-path for wire-plugins to consume.
+STORE_ROOT=/home/pi/.pi-plugins/npm/node_modules
+jq --arg root "$STORE_ROOT" '
+  .packages |= map(
+    sub("^npm:"; "") as $ref |
+    ($ref | capture("^(?<name>@[^@/]+/[^@]+|[^@]+)(@.*)?$").name) as $dir |
+    $root + "/" + $dir
+  )
+' "$SETTINGS" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "$SETTINGS"
+STORE_SRC="$(jq -r '.packages[0] | capture("^(?<root>.*/node_modules)/").root' "$SETTINGS" 2>/dev/null || true)"
+if [ -z "${STORE_SRC}" ]; then
+  echo "[setup] WARN: could not derive baked store root from settings.json — falling back" >&2
+  STORE_SRC="${STORE_ROOT}"
+fi
+echo "${STORE_SRC}" > /etc/s6-overlay/store-path
 mv /home/pi/.pi/agent /home/pi/.pi-plugins
 mkdir -p /home/pi/.pi/agent
 chown -R pi:pi /home/pi/.pi /home/pi/.pi-plugins
+log "baked plugin store: ${STORE_SRC}"
 
 # ---------------------------------------------------------------------------
 # 5. Cleanup

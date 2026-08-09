@@ -19,13 +19,15 @@ install_db_clients() {
     mkdir -p "$dir/bin"
 
     log "Installing MySQL client + PostgreSQL client + redis via apt..."
+    # apt clients follow the base image's Debian bookworm snapshot (fixed at
+    # image build); they are NOT tracked as latest.
     DEBIAN_FRONTEND=noninteractive apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       default-mysql-client postgresql-client redis-tools sqlite3 ca-certificates
     rm -rf /var/lib/apt/lists/*
 
-    log "Installing MinIO client (mc) to $dir/bin..."
-    curl -fsSL "https://dl.min.io/client/mc/release/linux-${GO_ARCH}/mc" -o "$dir/bin/mc"
+    log "Installing MinIO client (mc ${MC_RELEASE:-RELEASE.2025-08-13T08-35-41Z}) to $dir/bin..."
+    curl -fsSL "https://dl.min.io/client/mc/release/linux-${GO_ARCH}/mc.RELEASE.${MC_RELEASE:-RELEASE.2025-08-13T08-35-41Z}" -o "$dir/bin/mc"
     chmod +x "$dir/bin/mc"
 
     log "DB clients installed${UPDATED_TAG}"

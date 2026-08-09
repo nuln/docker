@@ -32,8 +32,15 @@
 # =============================================================================
 set -euo pipefail
 
+# Sync the container timezone (glibc reads /etc/localtime, not just $TZ). TZ is
+# injected by compose; keep the symlink in sync on every boot so `date`, cron
+# and other system tools honor it (Go/Node already honor $TZ directly).
+ln -sfn "/usr/share/zoneinfo/${TZ:-Asia/Shanghai}" /etc/localtime 2>/dev/null || true
+
 AGENT_DIR="${PI_CODING_AGENT_DIR:-/home/pi/.pi/agent}"
-STORE=/home/pi/.pi-plugins/npm/node_modules
+# Baked plugin store root produced at build time (setup.sh). Falls back to the
+# default layout if the manifest file is absent.
+STORE="$(cat /etc/s6-overlay/store-path 2>/dev/null || echo /home/pi/.pi-plugins/npm/node_modules)"
 RUNTIME_UID="${PI_USER_UID:-1000}"
 RUNTIME_GID="${PI_USER_GID:-1000}"
 OUT="$AGENT_DIR/settings.json"
@@ -49,9 +56,12 @@ OUT="$AGENT_DIR/settings.json"
 # live on the host and survive recreation.
 #
 # Coverage:
-#   A. whole credential dirs  : ~/.config (gh, gcloud, azure, wrangler,
-#                               uv, helm, rclone, planetscale...), ~/.ssh,
-#                               ~/.aws, ~/.azure, ~/.docker, ~/.kube
+#   A. whole credential dirs  : ~/.ssh, ~/.aws, ~/.azure, ~/.docker, ~/.kube,
+#                               ~/.wrangler
+#   A2. credential subdirs    : only the credential dot-dirs inside ~/.config
+#                               (gh, gcloud, gsutil, aws, azure, uv, helm,
+#                               rclone, wrangler, planetscale) — generic tool
+#                               caches in ~/.config stay on the container layer
 #   B. flat dotfiles at $HOME : ~/.gitconfig, ~/.git-credentials, ~/.netrc,
 #                               ~/.npmrc, ~/.pypirc, ~/.bunfig.toml, ~/.gemrc
 #   C. tool files NOT dirs    : ~/.cargo/credentials.toml (CARGO_HOME is
@@ -102,9 +112,19 @@ if [ -n "$CREDS_DIR" ] && [ -d "$CREDS_DIR" ]; then
     echo "[s6:wire-plugins] migrated existing $target -> $source"
   }
 
-  # A. whole credential/config dirs
-  for d in .config .ssh .aws .azure .docker .kube .wrangler; do
+  # A. whole credential dirs at $HOME (each is a dedicated credential location)
+  for d in .ssh .aws .azure .docker .kube .wrangler; do
     wire_ln dir "$HOME_DIR/$d" "$CREDS_DIR/$d"
+  done
+  # A2. credential SUBDIRECTORIES inside ~/.config — NOT the whole dir, so tool
+  # caches / generic XDG config are left on the container layer (only credentials
+  # are persisted). Each known CLI keeps its config in its own dot-dir here.
+  # Create + own ~/.config explicitly: wire-plugins runs as root, so the bare
+  # dir would otherwise end up root-owned and lock pi out of writing new configs.
+  mkdir -p "$HOME_DIR/.config"
+  chown "$RUNTIME_UID:$RUNTIME_GID" "$HOME_DIR/.config" 2>/dev/null || true
+  for c in gh gcloud gsutil aws azure uv helm rclone wrangler planetscale; do
+    wire_ln dir "$HOME_DIR/.config/$c" "$CREDS_DIR/.config/$c"
   done
   # B. flat credential dotfiles at $HOME root
   for f in .gitconfig .git-credentials .netrc .npmrc .pypirc .bunfig.toml .gemrc; do
@@ -175,29 +195,41 @@ fi
 #   PI_SKILLS=a,b,c           -> copy only those (whitelist), unknown names are
 #                                skipped with a notice
 #   PI_SKILLS=false|empty     -> skills stay in the image, NOT loaded (default)
+#
+# A marker (.wire) records the PI_SKILLS value the current skills were copied
+# with, so subsequent boots with the SAME value skip the copy entirely — user
+# edits made to ~/.agents/skills are preserved. The copy is re-run only when
+# the user changes PI_SKILLS (and thus expects a fresh sync).
 if [ "${PI_SKILLS:-false}" != "false" ] && [ -n "${PI_SKILLS:-}" ]; then
   SKILL_SRC="/etc/s6-overlay/plugins/skills"
   SKILL_DST="/home/pi/.agents/skills"
+  SKILL_MARK="$SKILL_DST/.wire"
   if [ -d "$SKILL_SRC" ]; then
-    mkdir -p "$SKILL_DST"
-    if [ "${PI_SKILLS}" = "true" ]; then
-      cp -a "$SKILL_SRC"/. "$SKILL_DST"/
-      echo "[s6:wire-plugins] copied ALL baked skills -> $SKILL_DST ($(find "$SKILL_DST" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ') skills)"
+    if [ -f "$SKILL_MARK" ] && [ "$(cat "$SKILL_MARK" 2>/dev/null)" = "${PI_SKILLS}" ]; then
+      echo "[s6:wire-plugins] skills already wired (PI_SKILLS unchanged; user edits in $SKILL_DST preserved)"
     else
-      LOADED=0; MISSING=0
-      while read -r name; do
-        [ -n "$name" ] || continue
-        if [ -d "$SKILL_SRC/$name" ]; then
-          cp -a "$SKILL_SRC/$name" "$SKILL_DST/"
-          LOADED=$((LOADED+1))
-        else
-          printf 'WARN: [s6:wire-plugins] no baked skill named "%s" (available: %s)\n' "$name" "$(ls "$SKILL_SRC")" >&2
-          MISSING=$((MISSING+1))
-        fi
-      done < <(printf '%s' "${PI_SKILLS}" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep -v '^$')
-      echo "[s6:wire-plugins] whitelist loaded -> $SKILL_DST (loaded=$LOADED skipped_unknown=$MISSING)"
+      mkdir -p "$SKILL_DST"
+      if [ "${PI_SKILLS}" = "true" ]; then
+        cp -a "$SKILL_SRC"/. "$SKILL_DST"/
+        echo "[s6:wire-plugins] copied ALL baked skills -> $SKILL_DST ($(find "$SKILL_DST" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ') skills)"
+      else
+        LOADED=0; MISSING=0
+        while read -r name; do
+          [ -n "$name" ] || continue
+          if [ -d "$SKILL_SRC/$name" ]; then
+            cp -a "$SKILL_SRC/$name" "$SKILL_DST/"
+            LOADED=$((LOADED+1))
+          else
+            printf 'WARN: [s6:wire-plugins] no baked skill named "%s" (available: %s)\n' "$name" "$(ls "$SKILL_SRC")" >&2
+            MISSING=$((MISSING+1))
+          fi
+        done < <(printf '%s' "${PI_SKILLS}" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep -v '^$')
+        echo "[s6:wire-plugins] whitelist loaded -> $SKILL_DST (loaded=$LOADED skipped_unknown=$MISSING)"
+      fi
+      printf '%s' "${PI_SKILLS}" > "$SKILL_MARK"
+      chown -R "$RUNTIME_UID:$RUNTIME_GID" "$SKILL_DST" 2>/dev/null || true
+      chown "$RUNTIME_UID:$RUNTIME_GID" "$SKILL_MARK" 2>/dev/null || true
     fi
-    chown -R "$RUNTIME_UID:$RUNTIME_GID" "$SKILL_DST" 2>/dev/null || true
   else
     echo "[s6:wire-plugins] PI_SKILLS set but no baked skills at $SKILL_SRC"
   fi

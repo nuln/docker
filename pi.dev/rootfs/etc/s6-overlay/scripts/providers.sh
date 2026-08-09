@@ -49,9 +49,10 @@ RUNTIME_GID="${PI_USER_GID:-1000}"
 KEY="${OPENCODE_API_KEY:-${PI_OPENCODE_API_KEY:-}}"
 
 ZEN_BASE="https://opencode.ai/zen/v1"
-# the first paid model in the Go template is used only as the Go-subscription
-# probe endpoint (1 token). It must stay a valid Go plan model id.
-ZEN_PROBE_MODEL="deepseek-v4-flash"
+# the first paid model in the Go template is used as the Go-subscription probe
+# endpoint (1 token). It is read from the template (NOT hardcoded) so it always
+# tracks the current Go plan models; falls back if the template is unreadable.
+ZEN_PROBE_MODEL="$(jq -r '.providers["opencode+go"].models[0].id' "$GO_TPL" 2>/dev/null || echo deepseek-v4-flash)"
 
 log() { echo "[providers] $*"; }
 
@@ -68,7 +69,9 @@ Requires OPENCODE_API_KEY (or PI_OPENCODE_API_KEY) in the environment.
 USAGE
 }
 
-# probe_go — 0 subscribed / 1 not subscribed / 2 probe failed
+# probe_go — 0 subscribed / 1 not subscribed / 2 probe failed (network, non
+# 200/401/403, invalid model). Failure is logged, never silently treated as
+# "not subscribed": a transient network error must not permanently skip Go.
 probe_go() {
   [ -n "$KEY" ] || { echo 2; return 0; }
   local code
@@ -81,11 +84,14 @@ probe_go() {
   case "$code" in
     200)      echo 0 ;;
     401|403)  echo 1 ;;
-    *)        echo 2 ;;
+    *)
+      log "WARN: probe for '$ZEN_PROBE_MODEL' returned HTTP $code — network/subscription state unknown"
+      echo 2 ;;
   esac
 }
 
-# resolve_go — print 1 (subscribed) or 0 (not subscribed)
+# resolve_go — print 1 (subscribed) or 0 (not subscribed). On probe ambiguity
+# (2) it retries once before deciding.
 resolve_go() {
   local st
   case "$GO_MODE" in
@@ -94,6 +100,10 @@ resolve_go() {
     auto) : ;;
   esac
   st="$(probe_go)"
+  if [ "$st" = "2" ]; then
+    log "retrying Go probe once (transient errors are not treated as unsubscribed)"
+    st="$(probe_go)"
+  fi
   case "$st" in
     0) echo 1 ;;
     *) echo 0 ;;
