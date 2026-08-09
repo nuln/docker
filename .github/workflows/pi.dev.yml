@@ -655,7 +655,9 @@ jobs:
             "$IMG" bash -c 'sleep 60'
           sleep 14
           # layered symlinks all wired (deep config dirs + flat dotfiles + nested cache files)
-          for L in /home/pi/.config /home/pi/.ssh /home/pi/.docker /home/pi/.npmrc /home/pi/.gitconfig /home/pi/.cargo/credentials.toml; do
+          # NOTE: ~/.config itself stays a real dir; only the credential subdirs
+          # (gh, gcloud, ...) are symlinked into the mount.
+          for L in /home/pi/.config/gh /home/pi/.ssh /home/pi/.docker /home/pi/.npmrc /home/pi/.gitconfig /home/pi/.cargo/credentials.toml; do
             docker exec pi-creds sh -c "test -L $L" \
               || { echo "FAIL: $L not symlinked"; exit 1; }
           done
