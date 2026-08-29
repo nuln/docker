@@ -6,7 +6,7 @@ use App\Http\Middleware\DynamicBaseUrl;
 use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Support\ServiceProvider;
 
-class DynamicBaseUrlServiceProvider extends ServiceProvider
+class Provider extends ServiceProvider
 {
     public function boot(): void
     {
