@@ -5,13 +5,14 @@ ENV APP_DIR=/lychee \
     DB_DATABASE=/config/lychee.sqlite \
     PHP_MEMORY_LIMIT=1G
 
-COPY dynamic_base_url_middleware.php /app/app/Http/Middleware/DynamicBaseUrl.php
-COPY frankenphp-worker.php /app/public/frankenphp-worker.php
+COPY dynamic.php /app/app/Http/Middleware/DynamicBaseUrl.php
+COPY worker.ph /app/public/frankenphp-worker.php
 COPY patch.sh /tmp/patch.sh
-COPY docker-entrypoint-custom.sh /docker-entrypoint-custom.sh
+COPY entrypoint.sh /docker-entrypoint-custom.sh
 
 RUN chmod +x /tmp/patch.sh /docker-entrypoint-custom.sh \
-    && /tmp/patch.sh
+    && /tmp/patch.sh \
+    && rm -f /tmp/patch.sh
 
 EXPOSE 8000
 
