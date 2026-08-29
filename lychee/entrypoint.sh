@@ -18,4 +18,11 @@ else
   echo "APP_KEY=$APP_KEY" > /app/.env
 fi
 
+# 信任反向代理：让 Laravel 读取 X-Forwarded-Proto/-Host，生成 https:// 与 secure cookie。
+# 默认信任所有直连代理（*），可用容器环境变量 TRUSTED_PROXIES 覆盖（如具体网段 172.16.0.0/12）。
+TRUSTED_PROXIES_VAL="${TRUSTED_PROXIES:-*}"
+if ! grep -q "^TRUSTED_PROXIES=" /app/.env; then
+  echo "TRUSTED_PROXIES=$TRUSTED_PROXIES_VAL" >> /app/.env
+fi
+
 exec /usr/local/bin/entrypoint.sh "$@"
