@@ -7,8 +7,8 @@
   "toolInputPreviewMaxLength": 400,
   "toolTextSummaryMaxLength": 120,
   "piInfrastructureReadPaths": [
-    "~/.pi/agent/**",
-    "$HOME/.pi/agent/**"
+    "/root/.pi/agent/**",
+    "/home/pi/.pi/agent/**"
   ],
   "authorizerChain": [],
   "permission": {
