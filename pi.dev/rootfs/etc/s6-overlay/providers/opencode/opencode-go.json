@@ -8,9 +8,18 @@
         { "id": "deepseek-v4-pro" },
         { "id": "kimi-k2.7-code" },
         { "id": "kimi-k3" },
+        { "id": "glm-5.1" },
         { "id": "glm-5.2" },
         { "id": "gpt-5.6-luna" },
-        { "id": "grok-4.5" }
+        { "id": "gpt-5.6-sol" },
+        { "id": "gpt-5.6-terra" },
+        { "id": "grok-4.5" },
+        { "id": "grok-4.6" },
+        { "id": "kimi-k2.6" },
+        { "id": "minimax-m3" },
+        { "id": "muse-spark-1.2" },
+        { "id": "qwen3.6-plus" },
+        { "id": "gemini-3.7-flash" }
       ]
     }
   }

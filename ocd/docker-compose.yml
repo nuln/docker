@@ -1,0 +1,43 @@
+name: ocd
+
+services:
+  ocd:
+    image: ${OCD_IMAGE:-ghcr.io/nuln/ocd:0.2.1}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ocd
+    restart: unless-stopped
+    networks:
+      - ocd_net
+
+    ports:
+      # 8787: Cloudflare 兼容 Workers 运行入口及 v4 管理 API
+      - "8787:8787"
+      # 18787: 管理员 / Operator Dashboard 独立管理端口（可选）
+      - "18787:18787"
+
+    volumes:
+      # 持久化平台数据（使用命名卷确保 SQLite WAL 与 POSIX 锁原生支持）
+      - ocd_data:/home/ocd
+
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      # 内部监听绑定地址（0.0.0.0 使容器外可访问）
+      - OCD_PUBLIC_BIND=${OCD_PUBLIC_BIND:-0.0.0.0:8787}
+      # 访问控制 Token（可选，不填将在初次启动时自动生成安全随机 Token 存入 secrets/ 目录）
+      - OCD_ADMIN_TOKEN=${OCD_ADMIN_TOKEN:-}
+      - OCD_DEPLOYER_TOKEN=${OCD_DEPLOYER_TOKEN:-}
+      - OCD_READ_ONLY_TOKEN=${OCD_READ_ONLY_TOKEN:-}
+
+    # 资源限制（根据机器性能按需调整）
+    mem_limit: ${MEM_LIMIT:-1024m}
+    cpus: ${CPU_LIMIT:-2}
+
+volumes:
+  ocd_data:
+    name: ocd_data
+
+networks:
+  ocd_net:
+    name: ocd_net
