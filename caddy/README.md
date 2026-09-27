@@ -1,30 +1,51 @@
 # Caddy
 
-A custom Caddy image that compiles in several plugins via `xcaddy` on top of the official image, for reverse proxying, static sites, WebSocket proxying, UDP forwarding, and certificate automation.
+A custom Caddy image that compiles a small, curated plugin set via `xcaddy` on top of the official image, for reverse proxying, static sites, WebSocket proxying, UDP forwarding, and certificate automation.
 
-## Built-in plugins
+## Image variants
+
+| Dockerfile | Tags | Plugins |
+|-----------|------|---------|
+| `Dockerfile` | `:<version>`, `:latest` | lean set (4 plugins), the default |
+| `Dockerfile.full` | `:<version>-full`, `:full` | lean set + webdav / exec / webhook |
+
+`Dockerfile.base` was removed — the lean build already is the base.
+
+## Built-in plugins (both variants)
 
 | Plugin | Purpose |
 |--------|---------|
 | `caddy-l4` | L4 / UDP SNI forwarding (e.g. forward `udp/:443` to hysteria) |
-| `rate-limit` | Request rate limiting, anti-bruteforce / anti-spam (a moat for low-power machines) |
-| `cache-handler` | Reverse-proxy / static-asset caching, speed-up |
-| `transform-encoder` | Structured (JSON) log output |
+| `caddy-dynamicdns` | Keeps DNS records in sync with the public IP (DDNS for dynamic-IP hosts) |
 | `caddy-dns/cloudflare` | ACME DNS-01 challenge, cert requests via Cloudflare DNS (no 80 port needed, supports wildcards) |
-| `greenpau/caddy-security` | OIDC login (e.g. PocketID), path-level auth |
+| `caddy-dns/alidns` | ACME DNS-01 challenge via Alibaba Cloud DNS |
+
+## Extra plugins (`:full` only)
+
+| Plugin | Purpose |
+|--------|---------|
+| `caddy-webdav` | WebDAV file server |
+| `caddy-exec` | Run shell commands from a handler / config |
+| `caddy-webhook` | Webhook receiver handler |
+
+Switch with `CADDY_IMAGE` in `.env` (e.g. `ghcr.io/nuln/caddy:2.11.4-full`).
 
 ## Build
 
 The image is built automatically by CI (`.github/workflows/caddy.yml`) for multiple architectures (amd64/arm64) and pushed to:
 
 ```
-ghcr.io/nuln/caddy:2.11.4
+ghcr.io/nuln/caddy:2.11.4        # lean  (Dockerfile)
+ghcr.io/nuln/caddy:2.11.4-full   # full  (Dockerfile.full)
+ghcr.io/nuln/caddy:latest       # lean
+ghcr.io/nuln/caddy:full         # full
 ```
 
 The version is pinned in `caddy/Dockerfile` (`ARG CADDY_VERSION`, not `latest`) so builds are reproducible; bump it deliberately for a new Caddy release. To build locally:
 
 ```bash
 docker build -t ghcr.io/nuln/caddy:2.11.4 caddy
+docker build -f caddy/Dockerfile.full -t ghcr.io/nuln/caddy:2.11.4-full caddy
 ```
 
 ## Usage
@@ -37,7 +58,7 @@ docker compose up -d
 
 - Config: `Caddyfile` (committed, organized by domain/plugin, edit directly)
 - Certs/data: `data/` (ACME auto-requests, must be persisted)
-- Logs: `./logs/error.log`, `access.log` (JSON format, via transform-encoder)
+- Logs: `./logs/error.log`, `access.log` (JSON format, via the built-in `json` encoder)
 - Static sites: `www/<domain>/`, default fallback `www/html/`
 - Upstream dependencies: `hysteria:3443` (UDP forwarding), `xray:8444` (/ws reverse proxy)
 
@@ -49,65 +70,38 @@ docker compose up -d
 
 | Variable | Description |
 |----------|-------------|
+| `CADDY_IMAGE` | Image tag to run, `ghcr.io/nuln/caddy:<version>` (lean) or `:<version>-full` |
 | `CF_DNS_API_TOKEN` | Cloudflare DNS-01 verification token (Zone:DNS edit permission only). If empty, falls back to HTTP-01 (needs public 80 port reachable) |
+| `ALIDNS_AK` / `ALIDNS_SK` | Optional Alibaba Cloud DNS credentials, used by the `conf/alidns.caddy` example |
 | `MEM_LIMIT` / `CPU_LIMIT` | Container memory/CPU cap, default `512m` / `1` |
 
 ## Config structure (one file per plugin)
 
-Config is split by plugin: **each `*.caddy` under `conf/` is a standalone minimal example** that runs on its own with `caddy run --config conf/xxx.caddy` (ships its own global block + minimal site). The production `Caddyfile` is a **self-contained** aggregate config that inlines all `order`/`security`/`layer4` global options and **does not import these snippets** (to avoid duplicate global-block conflicts).
+Config is split by plugin: **each `*.caddy` under `conf/` is a standalone minimal example** that runs on its own with `caddy run --config conf/xxx.caddy` (ships its own global block + minimal site). The production `Caddyfile` is a **self-contained** aggregate config that inlines the `layer4` global option and **does not import these snippets** (to avoid duplicate global-block conflicts).
 
 ```
 caddy/
 ├── Caddyfile            # production aggregate config (self-contained, all global options + real sites)
 ├── conf/
 │   ├── l4.json          # layer4 (L4/UDP forwarding, JSON format — the only JSON file)
-│   ├── rate-limit.caddy # rate-limit example (self-contained, runnable via caddy run --config conf/rate-limit.caddy)
-│   ├── cache.caddy      # cache example (self-contained)
-│   ├── logging.caddy    # structured JSON log example (self-contained)
 │   ├── cloudflare.caddy # Cloudflare DNS-01 cert example (self-contained)
-│   └── oidc.caddy       # caddy-security + PocketID OIDC example (self-contained, with subpath protection)
+│   ├── alidns.caddy     # Alibaba Cloud DNS-01 cert example (self-contained)
+│   ├── dynamicdns.caddy # caddy-dynamicdns example (self-contained, global dynamic_dns block)
+│   └── logging.caddy    # structured JSON log example (self-contained, built-in json encoder)
 └── ...
 ```
 
 - **layer4 uses JSON** (`conf/l4.json`): L4 forwarding is a separate app, structured as `{"apps":{"layer4":{...}}}`. The production `Caddyfile` declares the equivalent config directly via a global `layer4 { }` block.
-- **All other plugins use Caddyfile directives**; the production `Caddyfile` declares each directive's `order` and `security { }` in its global block, then uses `rate_limit` / `cache` / `authenticate` etc. directly in site blocks.
+- **Everything else uses Caddyfile directives**; the production `Caddyfile` declares each global option (`layer4`, `acme_dns`, `dynamic_dns`, ...) in its global block.
 - To change production config, edit `Caddyfile` directly; to verify a plugin's standalone usage, see the corresponding `conf/xxx.caddy` example.
 
-## OIDC login (PocketID via caddy-security)
+## 动态 DNS（caddy-dynamicdns）
 
-The image compiles the `caddy-security` plugin and can connect to PocketID (or any OIDC provider) for unified login directly.
+`dynamic_dns` 是一个全局选项，负责把本机公网 IP 自动同步到 DNS 记录，适合动态 IP 的家庭宽带 / VPS。
 
-### How it works
-
-- The global `security { }` block defines an **authentication portal myportal** (OIDC backend pointing to PocketID) + an **authorization policy pocketid**.
-- Use `authenticate with myportal` in a site block to enable auth on specific paths; unauthenticated users are redirected to PocketID, and return with a JWT cookie after login.
-
-### Protect only a `/xxx` subpath of a domain
-
-The `example.com` site in `Caddyfile` demonstrates: only `/protected/*` requires login, other paths (`/`, `/static`) pass through directly.
-
-```caddyfile
-example.com, www.example.com {
-    @protected path /protected/*
-    handle @protected {
-        authenticate with myportal
-        file_server /var/www/example.com
-    }
-    handle {
-        file_server /var/www/example.com
-    }
-}
-```
-
-To protect more subpaths, copy the `@protected` matcher and change `path`. For whole-site protection, drop the matcher and use `authenticate with myportal` directly.
-
-### Config steps
-
-1. Start a PocketID container, create an OIDC Client, callback:
-   `https://<your caddy domain>/caddy-security/oauth2/pocketid/authorization-code-callback`
-2. In `.env` fill: `POCKETID_CLIENT_ID`, `POCKETID_CLIENT_SECRET` (generate `JWT_SECRET` with `openssl rand -base64 32`).
-3. Change `Caddyfile`'s `base_auth_url` / `metadata_url` to your PocketID address, `cookie domain` to your main domain.
-4. `docker compose up -d`, visiting a protected path redirects to PocketID login.
+- `conf/dynamicdns.caddy` 是可独立运行的最小示例（`caddy run --config conf/dynamicdns.caddy`）。
+- 生产 `Caddyfile` 里已预留注释掉的 `dynamic_dns { }` 块，填好 provider 凭据后取消注释即可生效。
+- `provider` 需与镜像内置的 DNS provider 对应（`cloudflare` / `alidns`），凭据从环境变量注入。
 
 ## 推荐的额外插件
 
@@ -119,19 +113,19 @@ To protect more subpaths, copy the `@protected` matcher and change `path`. For w
 | ⭐⭐⭐ | `github.com/hslatman/caddy-crowdsec-bouncer` | 13K⬇ | CrowdSec 联动封禁，基于社区威胁情报自动阻断恶意 IP（支持 L4+L7） |
 | ⭐⭐⭐ | `github.com/WeidiDeng/caddy-cloudflare-ip` | 13.5K⬇ | 获取 Cloudflare 真实访客 IP（如果网站通过 CF CDN 回源） |
 | ⭐⭐ | `github.com/porech/caddy-maxmind-geolocation` | 12.5K⬇ | GeoIP 地理匹配，按国家/城市/ASN 进行访问控制 |
-| ⭐⭐ | `github.com/darkweak/souin/plugins/caddy` | 23.5K⬇ | 企业级 HTTP 缓存，支持 Redis 等分布式后端，替代 cache-handler |
+| ⭐⭐ | `github.com/darkweak/souin/plugins/caddy` | 23.5K⬇ | 企业级 HTTP 缓存，支持 Redis 等分布式后端 |
 | ⭐⭐ | `github.com/caddyserver/replace-response` | 118K⬇ | 响应体内容替换/修改，可用于动态修改 HTML/JSON 响应 |
-| ⭐⭐ | `github.com/ueffel/caddy-brotli` | 8.8K⬇ | Brotli 压缩，比 gzip 提升约 20% 压缩率 |
+| ⭐⭐ | `github.com/mholt/caddy-ratelimit` | 20K⬇ | 限流，防刷/防爆破 |
 | ⭐⭐ | `github.com/ggicci/caddy-jwt` | 3.7K⬇ | JWT 认证，适用于 API 鉴权（轻量替代 caddy-security） |
+| ⭐⭐ | `github.com/ueffel/caddy-brotli` | 8.8K⬇ | Brotli 压缩，比 gzip 提升约 20% 压缩率 |
 | ⭐ | `github.com/kirsch33/realip` | 6.4K⬇ | 从可信代理头提取真实客户端 IP |
 | ⭐ | `github.com/lucaslorentz/caddy-docker-proxy/v2` | 2.1K⬇ | Docker 自动配置，label 驱动（适合 Docker Swarm 环境） |
-| ⭐ | `github.com/mholt/caddy-webdav` | 40K⬇ | WebDAV 文件服务器 |
 
 ### 按场景推荐组合
 
 **安全增强**：coraza-waf + crowdsec-bouncer + maxmind-geolocation  
 **性能优化**：souin-cache + brotli + replace-response  
-**Cloudflare 用户**：cloudflare-ip + caddy-dns/cloudflare
+**Cloudflare 用户**：cloudflare-ip + caddy-dns/cloudflare + caddy-dynamicdns
 
 ## 插件文档更新
 
@@ -153,5 +147,6 @@ python3 scripts/update-plugins.py --push
 ## Notes
 
 - Config uses `Caddyfile` (`caddy run --config /etc/caddy/Caddyfile`). layer4 uses the global `layer4 { }` block; the HTTP part uses Caddyfile directives only, no JSON needed.
-- Rate limiting is enabled in each site's `handle` (default 100 requests/IP/min, see `rate_limit` in `Caddyfile`).
+- Only modules baked into the image are usable — a directive from a plugin that is not compiled in fails at config load with `unrecognized directive`. Keep the plugin list in `Dockerfile` / `Dockerfile.full` and the config in sync.
+- Removed plugins (previously in the image): `caddy-supervisor`, `caddy-ratelimit`, `cache-handler`, `transform-encoder`, `caddy-events-exec`, `caddy-git`, `caddy-security`, `caddy-cgi`, `caddy-wol`, `caddy-hmac`. Use the built-in `json` log encoder instead of `transform-encoder`.
 - Low-power defaults: `mem_limit 512m / cpus 1`.

@@ -1,0 +1,29 @@
+# 动态 DNS 配置（caddy-dynamicdns，独立可用）
+# 单独部署：caddy run --config dynamicdns.caddy
+# 把本机公网 IP 自动同步到 DNS 记录（适合动态 IP 的家庭宽带 / VPS）
+# 凭据通过环境变量注入（运行期，不写盘）
+{
+	dynamic_dns {
+		# provider 可选：cloudflare / alidns 等（需与镜像内置的 DNS provider 对应）
+		# 多个域名/多账号可重复写 provider
+		provider cloudflare {
+			api_token {env.CF_DNS_API_TOKEN}
+		}
+
+		# 要同步的域名：<zone> <names...>，names 省略则同步 zone 根记录（@）
+		domains {
+			example.com @ *.example.com
+		}
+
+		# 公网 IP 来源
+		ip_source simple_http https://1.1.1.1/dns-query
+
+		# TTL 与检查间隔（时长格式）
+		ttl 5m
+		check_interval 5m
+	}
+}
+
+:8080 {
+	respond "dynamicdns example (DDNS records kept in sync)" 200
+}

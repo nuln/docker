@@ -6,7 +6,7 @@ A unified Docker image build repository containing multiple **self-contained sub
 
 | Directory | Image | Description |
 |-----------|-------|-------------|
-| `caddy/` | `ghcr.io/nuln/caddy` | Custom Caddy (with caddy-l4 plugin), reverse proxy / static site / UDP forwarding |
+| `caddy/` | `ghcr.io/nuln/caddy` | Custom Caddy (caddy-l4 / caddy-dynamicdns / cloudflare+alidns DNS), reverse proxy / static site / UDP forwarding. Two variants: `:latest` (lean) and `:full` (+ webdav/exec/webhook) |
 | `icloud/` | `ghcr.io/nuln/icloud` | Encrypted-credential iCloud backup (based on mandarons/icloud-docker) |
 | `ocd/` | `ghcr.io/nuln/ocd` | Open Compute daemon: Cloudflare Workers platform with KV, D1, R2, Queues, and Workflows |
 | `pi.dev/` | `ghcr.io/nuln/pi.dev` | Pi coding agent container: Node 24 + s6-overlay, 14 curated plugins baked into the image layer (wire-plugins writes absolute-path settings.json on first boot) + Web UI autostart + on-demand toolchains |

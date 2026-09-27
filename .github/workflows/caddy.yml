@@ -41,10 +41,6 @@ jobs:
             tag_suffix: ""
             extra_tags: "ghcr.io/nuln/caddy:latest"
             verify: true
-          - dockerfile: Dockerfile.base
-            tag_suffix: "-base"
-            extra_tags: "ghcr.io/nuln/caddy:base"
-            verify: false
           - dockerfile: Dockerfile.full
             tag_suffix: "-full"
             extra_tags: "ghcr.io/nuln/caddy:full"
@@ -99,3 +95,36 @@ jobs:
             exit 1
           fi
           echo "✅ In-image Caddy version matches tag version (${VERSION})"
+
+      # Guards against config/plugin drift: a directive from a plugin that is
+      # not compiled in makes Caddy fail at config load.
+      - name: Validate committed config against built image
+        if: matrix.variant.verify
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          IMG="ghcr.io/nuln/caddy:${VERSION}"
+          docker pull --platform linux/amd64 "$IMG"
+          # dummy credentials: only config parsing/provisioning is checked, no API calls
+          export CF_DNS_API_TOKEN=$(printf 'a%.0s' {1..40})
+          export ALIDNS_AK="LTAI$(printf 'b%.0s' {1..16})"
+          export ALIDNS_SK=$(printf 'c%.0s' {1..32})
+          fail=0
+          check() {
+            local name="$1"; shift
+            if out=$(docker run --rm --platform linux/amd64 \
+              -v "$PWD/caddy:/etc/caddy:ro" \
+              -e CF_DNS_API_TOKEN -e ALIDNS_AK -e ALIDNS_SK \
+              "$IMG" "$@" 2>&1) && grep -q "Valid configuration" <<<"$out"; then
+              echo "✅ $name"
+            else
+              echo "❌ $name"
+              tail -n 5 <<<"$out" >&2
+              fail=1
+            fi
+          }
+          check "Caddyfile"           caddy validate --config /etc/caddy/Caddyfile
+          check "conf/l4.json"        caddy validate --config /etc/caddy/conf/l4.json
+          for f in caddy/conf/*.caddy; do
+            check "$f" caddy validate --adapter caddyfile --config "/etc/caddy/${f#caddy/}"
+          done
+          exit $fail

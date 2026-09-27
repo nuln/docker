@@ -518,14 +518,17 @@ _最后更新: 2026-07-20_
 # 安装 xcaddy
 go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 
-# 构建 Caddy + 插件
+# 构建 Caddy + 插件（与 caddy/Dockerfile 一致）
 xcaddy build \
+  --with github.com/caddy-dns/cloudflare \
+  --with github.com/caddy-dns/alidns \
   --with github.com/mholt/caddy-l4 \
-  --with github.com/mholt/caddy-ratelimit \
-  --with github.com/caddy-dns/cloudflare
+  --with github.com/mholt/caddy-dynamicdns
 ```
 
 ## 建议安装的插件
+
+> 以下插件**未**编译进本项目镜像，需要时用上面的命令自行 `--with` 添加。
 
 根据使用场景推荐：
 

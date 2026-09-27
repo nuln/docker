@@ -31,12 +31,9 @@ services:
       - TZ=${TZ:-Asia/Shanghai}
       # Cloudflare DNS-01 API Token (Zone:DNS edit permission only)
       - CF_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
-      # PocketID OIDC client (caddy-security), callback:
-      #   https://<domain>/caddy-security/oauth2/pocketid/authorization-code-callback
-      - POCKETID_CLIENT_ID=${POCKETID_CLIENT_ID}
-      - POCKETID_CLIENT_SECRET=${POCKETID_CLIENT_SECRET}
-      # shared secret for caddy-security JWT (openssl rand -base64 32)
-      - JWT_SECRET=${JWT_SECRET}
+      # Optional: alidns DNS-01 credentials (used by conf/alidns.caddy)
+      - ALIDNS_AK=${ALIDNS_AK}
+      - ALIDNS_SK=${ALIDNS_SK}
 
     # low-power machine resource cap
     mem_limit: ${MEM_LIMIT:-512m}
