@@ -2,7 +2,7 @@ name: icloud
 
 services:
   icloud:
-    image: ${ICLOUD_IMAGE:-ghcr.io/nuln/icloud:1.28.0}
+    image: ${ICLOUD_IMAGE:-ghcr.io/nuln/icloud:2.0.0}
     container_name: icloud
     restart: unless-stopped
 

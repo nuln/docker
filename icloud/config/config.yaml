@@ -36,6 +36,20 @@ app:
     bark:
       url: "https://nulnul.cn/bark/yourBarkDeviceKey?isArchive=1&sound=minuet&group=icloud&icon=https://www.apple.com/favicon.ico"
       title: "iCloud Sync"
+  # Warn this many days before Apple's ~90-day trust cookie expires, so trust can
+  # be refreshed before a sync fails (default 7). Pushed to Bark regardless of
+  # the sync_summary gate above, debounced to once per cookie lifetime.
+  # trust_expiry_warn_days: 7
+  # Optional embedded Web UI (dashboard + browser 2FA re-auth), upstream 2.0.0.
+  # SECURITY: it has no login of its own and accepts your Apple ID password over
+  # plaintext HTTP, so keep the default 127.0.0.1 unless a trusted reverse proxy
+  # (Cloudflare Access / Tailscale / Authelia) supplies auth + TLS in front.
+  # The port is not published by docker-compose.yml; map it yourself if enabling.
+  # web_ui:
+  #   enabled: false
+  #   host: "127.0.0.1"
+  #   port: 8080
+  #   public_url: ""              # your external URL; embedded in Bark messages
 
 drive:
   destination: "drive"

@@ -1,5 +1,5 @@
 # Pinned, not 'latest': bump deliberately for reproducible builds.
-ARG ICD_VERSION=1.28.0
+ARG ICD_VERSION=2.0.0
 FROM mandarons/icloud-drive:${ICD_VERSION}
 
 USER root

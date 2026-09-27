@@ -7,13 +7,13 @@ An encrypted-credential iCloud backup image, based on [mandarons/icloud-docker](
 The image is built automatically by CI (`.github/workflows/icloud.yml`) for multiple architectures (amd64/arm64) and pushed to:
 
 ```
-ghcr.io/nuln/icloud:1.28.0
+ghcr.io/nuln/icloud:2.0.0
 ```
 
 The version is pinned in `icloud/Dockerfile` (`ARG ICD_VERSION`, not `latest`) so builds are reproducible; bump it deliberately for a new upstream release. To build locally:
 
 ```bash
-docker build -t ghcr.io/nuln/icloud:1.28.0 icloud
+docker build -t ghcr.io/nuln/icloud:2.0.0 icloud
 ```
 
 ## Usage
@@ -41,19 +41,50 @@ Enter password + 2FA as prompted; after success, restart the container to sync a
 
 ### Bark notifications (iOS push)
 
-The image has Bark push built in (injected via a runtime monkey-patch, no upstream code changes). Fill the **full push URL** in the `app.bark` section of `config/config.yaml`; it triggers together with `sync_summary` (sync success/failure summary, plus 2FA-expiry alerts):
+The image has Bark push built in (injected via a runtime monkey-patch, no upstream code changes). Fill the **full push URL** under `app.notifications.bark` in `config/config.yaml` (same level as `sync_summary`):
 
 ```yaml
 app:
-  bark:
-    url: "https://nulnul.cn/bark/yourBarkDeviceKey?isArchive=1&sound=minuet&group=icloud"
-    title: "iCloud Sync"            # optional
+  notifications:
+    sync_summary:
+      enabled: true
+    bark:
+      url: "https://nulnul.cn/bark/yourBarkDeviceKey?isArchive=1&sound=minuet&group=icloud"
+      title: "iCloud Sync"          # optional
 ```
 
 - `url` is the address you get from "copy key" in the Bark App; you may append any custom params (`icon`, `sound`, `group`, `level`, `isArchive`, etc.) — the image only appends `/<title>/<body>` after it and **does not alter any of your existing params**.
 - Official server example: `https://api.day.app/<key>?isArchive=1`; for self-hosted, change to your domain.
 - Bark connects directly over HTTPS; a domestic NAS **needs no proxy** (unlike Telegram).
-- **Notifies only when data is actually synced**: Bark uses actual downloaded bytes `bytes_downloaded > 0` as the threshold. Upstream counts every re-verified/skipped file as `files_downloaded` (shows as "Downloaded: 642 files (0 B)"), but such empty cycles have 0 bytes and Bark **does not push**, avoiding hourly empty-run spam. Only a real new-content pull (bytes > 0) notifies. The 2FA (two-factor expiry) alert is exempt and pushes every time.
+
+Three event types are pushed:
+
+| Event | When | Gating |
+|-------|------|--------|
+| Sync summary | end of a sync cycle | `sync_summary.enabled: true` **and** real bytes transferred |
+| 2FA challenge | Apple demands two-factor auth | always |
+| Trust expiry | `trust_expiry_warn_days` (default 7) before Apple's ~90-day trust cookie expires | always |
+
+- **Sync summary notifies only when data is actually synced**: the threshold is real transferred bytes `bytes_downloaded > 0`. Upstream counts every re-verified/skipped file as `files_downloaded` (shows as "Downloaded: 642 files (0 B)"), but such empty cycles have 0 bytes and Bark **does not push**, avoiding hourly empty-run spam. The 2FA and trust-expiry alerts are exempt and always push.
+- **Trust expiry** is upstream 2.0.0's pre-emptive warning, debounced to once per cookie lifetime, so it is not spammy. Tune the lead time with `app.trust_expiry_warn_days`.
+- **2FA text is deliberately fnOS-safe**: it prints the plain in-container `icloud --session-directory=...` command rather than upstream's `docker exec ... su-exec abc icloud ...`, which fails on unprivileged hosts (no `CAP_SETGID`).
+
+### Optional: embedded Web UI (upstream 2.0.0)
+
+Off by default; this image inherits it unchanged. When enabled you get a dashboard plus on-device 2FA re-auth, and the 2FA / trust-expiry Bark messages gain a tappable link instead of only the CLI command.
+
+```yaml
+app:
+  web_ui:
+    enabled: true
+    host: "127.0.0.1"              # default loopback; "0.0.0.0" needs a trusted proxy
+    port: 8080
+    public_url: "https://icloud.example.com"   # embedded in notifications
+```
+
+> ⚠️ **Security**: the UI has no login of its own — `POST /auth/password` accepts your Apple ID password in plaintext HTTP. The `127.0.0.1` default keeps it off the LAN. Only set `host: "0.0.0.0"` behind an authenticating reverse proxy (Cloudflare Access / Tailscale / Authelia). The port is **not** published by our `docker-compose.yml`; add a mapping yourself if you enable it.
+
+State for the force-sync button and trust-expiry debounce lives in `/config` (inside the mounted `./config` volume), so it survives container recreation.
 
 ## fnOS / unprivileged Docker deployment notes
 
