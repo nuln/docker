@@ -104,15 +104,30 @@ jobs:
         run: |
           set -eu
           OUT="$RUNNER_TEMP/certs"
-          ./frp/gen-cert.sh -d frps.example.com -o "$OUT" >/dev/null
-          openssl verify -CAfile "$OUT/ca.crt" "$OUT/server.crt"
-          openssl x509 -in "$OUT/server.crt" -noout -ext subjectAltName | grep -q "DNS:frps.example.com" \
-            || { echo "❌ server.crt 缺少 SAN" >&2; exit 1; }
-          # 通配符域名也要能签
-          ./frp/gen-cert.sh -d '*.example.com' -o "$RUNNER_TEMP/certs2" >/dev/null
-          openssl x509 -in "$RUNNER_TEMP/certs2/server.crt" -noout -ext subjectAltName \
-            | grep -q 'DNS:\*\.example\.com' \
-            || { echo "❌ 通配符 SAN 缺失" >&2; exit 1; }
+          ./frp/gen-cert.sh frp.example.com -o "$OUT" >/dev/null
+          openssl verify -CAfile "$OUT/ca.crt" "$OUT/server.crt" "$OUT/client.crt"
+
+          # 根域名一个就够，其余 SAN 自动派生：根域名、通配符、两个约定子域、本机
+          for san in 'DNS:frp\.example\.com' 'DNS:\*\.frp\.example\.com' \
+                     'DNS:frps\.frp\.example\.com' 'DNS:frpc\.frp\.example\.com' \
+                     'DNS:localhost' 'IP Address:127\.0\.0\.1'; do
+            openssl x509 -in "$OUT/server.crt" -noout -ext subjectAltName | grep -q "$san" \
+              || { echo "❌ server.crt 缺少 SAN: $san" >&2; exit 1; }
+          done
+          # 两边证书都要生成，CN 可区分。
+          # openssl 的 -subject 输出格式在版本间有差异（CN= 与 CN = 都有），
+          # 所以用可选空格匹配。
+          openssl x509 -in "$OUT/server.crt" -noout -subject \
+            | grep -qE 'CN ?= ?frps\.frp\.example\.com' \
+            || { echo "❌ server.crt CN 不对" >&2; exit 1; }
+          openssl x509 -in "$OUT/client.crt" -noout -subject \
+            | grep -qE 'CN ?= ?frpc\.frp\.example\.com' \
+            || { echo "❌ client.crt CN 不对" >&2; exit 1; }
+          [ "$(stat -c %a "$OUT/ca.key")" = 600 ] || { echo "❌ ca.key 权限不是 600" >&2; exit 1; }
+          # 通配符是派生产物，不能当根域名传进去
+          if ./frp/gen-cert.sh '*.example.com' -o "$RUNNER_TEMP/certs3" >/dev/null 2>&1; then
+            echo "❌ 通配符被当根域名接受了" >&2; exit 1
+          fi
           echo "✅ gen-cert.sh produces SAN certificates frp can verify"
 
       # 端到端冒烟：起两个容器（frps + frpc），确认真的能登录并注册代理。
