@@ -8,6 +8,7 @@ A unified Docker image build repository containing multiple **self-contained sub
 |-----------|-------|-------------|
 | `caddy/` | `ghcr.io/nuln/caddy` | Custom Caddy (caddy-l4 / caddy-dynamicdns / cloudflare+alidns DNS), reverse proxy / static site / UDP forwarding. Two variants: `:latest` (lean) and `:full` (+ webdav/exec/webhook) |
 | `icloud/` | `ghcr.io/nuln/icloud` | Encrypted-credential iCloud backup (based on mandarons/icloud-docker) |
+| `frp/` | `ghcr.io/nuln/frp` | Single image with both binaries: `frpc` + `frps`, one role per container, selected by `command` alone. Static binaries on alpine, UPX-compressed (37MB). One script only — it starts the requested role and serves the container `HEALTHCHECK` as a built-in subcommand. Config errors are reported by frp itself. Image-building code only, no config templates |
 | `pi.dev/` | `ghcr.io/nuln/pi.dev` | Pi coding agent container: Node 24 + s6-overlay, 14 curated plugins baked into the image layer (wire-plugins writes absolute-path settings.json on first boot) + Web UI autostart + on-demand toolchains |
 
 Each sub-project directory has its own documentation describing config, usage, and development notes.

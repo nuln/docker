@@ -1,0 +1,180 @@
+name: frp
+
+# Only build when the frp/ subdirectory (or this workflow file) changes.
+on:
+  push:
+    branches: [master]
+    paths:
+      - "frp/**"
+      - ".github/workflows/frp.yml"
+  workflow_dispatch:
+    inputs:
+      frp_version:
+        description: "frp version to bake (empty = the ARG pinned in frp/Dockerfile)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # 版本在 Dockerfile 里 pin（手动 bump），这里从 ARG 读出来当镜像 tag；
+      # workflow_dispatch 可以临时指定版本试构建。
+      - name: Resolve frp version (dispatch input > Dockerfile ARG)
+        id: ver
+        run: |
+          ARG() {
+            awk -v k="$1" '$1=="ARG"{split($2,a,"="); if(a[1]==k){print a[2]; exit}}' frp/Dockerfile
+          }
+          VERSION="${{ github.event.inputs.frp_version }}"
+          [ -n "$VERSION" ] || VERSION=$(ARG FRP_VERSION)
+          if [ -z "$VERSION" ]; then
+            echo "Could not resolve FRP_VERSION from frp/Dockerfile" >&2
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Baking frp version: ${VERSION}"
+
+  build:
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ghcr.io/nuln/frp:${{ needs.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push frp image (multi-arch)
+        uses: docker/build-push-action@v7
+        with:
+          context: frp
+          file: frp/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          build-args: |
+            FRP_VERSION=${{ needs.version.outputs.version }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.version.outputs.version }}
+          tags: |
+            ghcr.io/nuln/frp:latest
+            ghcr.io/nuln/frp:${{ needs.version.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # 一个镜像两个二进制，两个都得在，而且版本号要和 tag 一致
+      # （防止 bump 了 Dockerfile 的 ARG 却推了旧 tag 的镜像）。
+      - name: Verify both binaries match the tag
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          IMG="ghcr.io/nuln/frp:${VERSION}"
+          docker pull --platform linux/amd64 "$IMG"
+          for bin in frpc frps; do
+            GOT=$(docker run --rm --platform linux/amd64 --entrypoint "$bin" "$IMG" -v)
+            echo "$bin -v -> ${GOT}"
+            [ "$GOT" = "$VERSION" ] || { echo "Version mismatch: $bin=${GOT} tag=${VERSION}" >&2; exit 1; }
+          done
+          echo "✅ frpc and frps both report ${VERSION}"
+
+      # 端到端冒烟：起两个容器（frps + frpc），确认真的能登录并注册代理。
+      # 配置校验只查结构，查不出"能不能连上"这类问题。
+      - name: Smoke test (frps + frpc containers)
+        run: |
+          set -euo pipefail
+          IMG="ghcr.io/nuln/frp:${{ needs.version.outputs.version }}"
+          NET=frp-smoke-net
+          WORK="$(mktemp -d)"
+          cleanup() {
+            docker logs frp-smoke-frpc 2>&1 | tail -20 || true
+            docker rm -f frp-smoke-origin frp-smoke-frps frp-smoke-frpc >/dev/null 2>&1 || true
+            docker network rm "$NET" >/dev/null 2>&1 || true
+            rm -rf "$WORK"
+          }
+          trap cleanup EXIT
+
+          cat > "$WORK/frps.toml" <<'EOF'
+          bindPort = 17000
+          [auth]
+          method = "token"
+          token = "smoke-token"
+          EOF
+          # serverAddr 用容器名走 docker 内网，顺带验证客户端无需公网地址即可接入；
+          # localIP 指向 origin 容器，验证数据真的能穿过隧道
+          cat > "$WORK/frpc.toml" <<'EOF'
+          serverAddr = "frp-smoke-frps"
+          serverPort = 17000
+          [auth]
+          method = "token"
+          token = "smoke-token"
+          [[proxies]]
+          name = "smoke"
+          type = "tcp"
+          localIP = "frp-smoke-origin"
+          localPort = 15555
+          remotePort = 16000
+          EOF
+
+          docker network create "$NET" >/dev/null
+          # 源服务用独立容器，模拟"frpc 代理另一台机器上的服务"
+          printf 'PAYLOAD-THROUGH-TUNNEL' > "$WORK/index.html"
+          docker run -d --name frp-smoke-origin --network "$NET" -v "$WORK:/www:ro" \
+            python:3-alpine python -m http.server 15555 --directory /www >/dev/null
+          docker run -d --name frp-smoke-frps --network "$NET" -p 16000:16000 \
+            -v "$WORK:/etc/frp:ro" "$IMG" frps >/dev/null
+          for _ in $(seq 1 20); do
+            docker logs frp-smoke-frps 2>&1 | grep -q "frps started successfully" && break
+            sleep 1
+          done
+          docker logs frp-smoke-frps 2>&1 | grep -q "frps started successfully" \
+            || { echo "❌ frps never started" >&2; exit 1; }
+          docker exec frp-smoke-frps /entrypoint.sh healthcheck
+
+          docker run -d --name frp-smoke-frpc --network "$NET" \
+            -v "$WORK:/etc/frp:ro" "$IMG" frpc >/dev/null
+          ok=0
+          for _ in $(seq 1 30); do
+            docker logs frp-smoke-frpc 2>&1 | grep -q "login to server success" && { ok=1; break; }
+            docker ps --filter name=frp-smoke-frpc --format '{{.Status}}' | grep -q Up || break
+            sleep 2
+          done
+          [ "$ok" = 1 ] || { echo "❌ frpc never logged in" >&2; exit 1; }
+          docker logs frp-smoke-frps 2>&1 | grep -q "new proxy \[smoke\]" \
+            || { echo "❌ proxy was not registered on frps" >&2; exit 1; }
+          docker exec frp-smoke-frpc /entrypoint.sh healthcheck
+          echo "✅ frpc logged in, proxy registered on frps, both containers healthy"
+
+          # 数据面：控制通道通了不代表数据能过去，这里从宿主机真发一次请求。
+          # 二进制经过 UPX 压缩，这一步同时验证压缩没有破坏数据转发。
+          GOT=$(curl -s --max-time 20 http://127.0.0.1:16000/ || true)
+          [ "$GOT" = "PAYLOAD-THROUGH-TUNNEL" ] \
+            || { echo "❌ data path broken, got '${GOT}'" >&2; exit 1; }
+          echo "✅ data flows through the tunnel (UPX-packed binaries)"
+
+          # frps 挂掉后 frpc 进程应当继续存活并重连（loginFailExit 只管首次登录），
+          # 客户端不该跟着服务端一起死
+          docker exec frp-smoke-frps sh -c 'kill -9 "$(pidof frps)"'
+          sleep 10
+          docker exec frp-smoke-frpc /entrypoint.sh healthcheck
+          echo "✅ frpc survives an frps crash"
