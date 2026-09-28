@@ -160,39 +160,104 @@ frp 的子命令在两个角色上**不对称**（0.71.0 实测）：
 
 frp 从 v0.50.0 起默认 `transport.tls.enable = true`，但不配证书时 **frps 用随机生成的证书、frpc 也不校验** —— 能防窃听，但识别不了中间人。配一套自己的 CA 就能互相验证身份。
 
-`gen-cert.sh` 在宿主机上生成（需要 `openssl`，产物在 `./certs`，已被 gitignore）：
+### 远程使用（不用 clone 整个仓库）
+
+仓库是公开的，脚本可以直接从 GitHub 拉下来跑。**在 frps 那台机器上执行**，证书和 CA 私钥就留在本机。
 
 ```bash
-./gen-cert.sh                                  # 交互式，问你域名
-./gen-cert.sh frps.example.com                 # 只签 frps 证书
-./gen-cert.sh '*.example.com,frps.example.com' # 通配符 + 具体域名
-./gen-cert.sh -d frps.example.com -o /etc/frp/certs -n 3650
+# A. 一条命令直接跑（最省事）
+curl -fsSL https://raw.githubusercontent.com/nuln/docker/master/frp/gen-cert.sh \
+  | sh -s -- example.com
+
+# B. 先下载、审阅、再执行（涉及私钥，推荐这个）
+curl -fsSL -o gen-cert.sh https://raw.githubusercontent.com/nuln/docker/master/frp/gen-cert.sh
+less gen-cert.sh                    # 看清楚再跑
+chmod +x gen-cert.sh
+./gen-cert.sh example.com
+
+# C. 克隆仓库
+git clone --depth 1 https://github.com/nuln/docker.git
+./docker/frp/gen-cert.sh example.com
 ```
+
+三种方式都实测可用。不带参数会进入交互式提问。
+
+> `gen-cert.sh` 需要宿主机有 `openssl`。**镜像里没有**（镜像只装 frp 两个二进制），
+> 所以在宿主机或任意带 openssl 的容器里跑，不要试图在 frp 容器里执行。
+
+### 参数
 
 | 参数 | 说明 |
 |---|---|
-| `-d, --domain` | 域名，逗号分隔；纯数字点开头自动识别为 IP；支持 `*` 通配 |
-| `-o, --out` | 输出目录，默认 `./certs` |
+| 位置参数 / `-d, --domain` | **根域名**，如 `example.com`。误粘的 `https://` 和结尾斜杠会自动去掉 |
+| `-o, --out` | 输出目录，默认 `./certs`（已 gitignore） |
 | `-n, --days` | 证书有效期，默认 **36500 天（100 年）** |
-| `--server-only` | 不生成 client 证书 |
-| `--ca-cn` | CA 的 CN |
+| `-h, --help` | 帮助 |
 
-产物：`ca.crt/ca.key`（两端共享）、`server.crt/server.key`（frps 用）、`client.crt/client.key`（双向验证时 frpc 用）。
+只给一个根域名，其余 SAN 自动派生，覆盖你可能用的所有连接方式：
 
-私有 CA 自己控制有效期，没有 Let's Encrypt 那种 90 天上限，所以默认直接拉到 100 年。代价是私钥泄露后无法靠续期解决，只能整个 CA 重建重签。
+```
+DNS:example.com          根域名本身
+DNS:*.example.com        任意子域
+DNS:frps.example.com     约定服务端名
+DNS:frpc.example.com     约定客户端名
+DNS:localhost            本机测试
+IP:127.0.0.1             本机测试
+```
 
-脚本跑完会打印可直接粘贴的 frps.toml / frpc.toml 片段，以及 volumes 挂载方式。
+### 产物与分发（重要）
 
-**两个容易踩的坑**（都实测过）：
+| 文件 | 给谁 | 说明 |
+|---|---|---|
+| `ca.crt` | **两端都要** | 用来验证对方 |
+| `ca.key` | **只留服务端** | CA 私钥，谁拿到谁能签发新证书 |
+| `server.crt` / `server.key` | frps | CN = `frps.<根域名>` |
+| `client.crt` / `client.key` | frpc | CN = `frpc.<根域名>` |
+
+```
+frps 服务器                      frpc 客户端
+  ca.crt      ─────────────────→  ca.crt
+  ca.key      （留在本机，不外发）
+  server.crt  （本机用）
+                                      client.crt ─→ 本机用
+                                      client.key ─→ 本机用
+```
+
+把 `ca.key` 放上 frpc 客户端等于交出签发权限——拿到它的人可以给自己签一张合法客户端证书直接连进你的 frps。
+
+从服务器取客户端需要的文件：
+
+```bash
+scp server:/path/certs/{ca.crt,client.crt,client.key} ./
+```
+
+只做单向验证（frps 不校验客户端）时，frpc 侧连 `client.*` 都不需要，只拿 `ca.crt`。
+
+### compose 挂载
+
+```yaml
+services:
+  frps:
+    volumes:
+      - ./conf:/config:ro
+      - ./cert:/config/cert:ro      # 只放 ca.crt / server.crt / server.key
+```
+
+### 三个容易踩的坑（都实测过）
 
 - **必须用 SAN 证书。** Go 1.15+ 废弃 CommonName，只写 `CN` 会报
-  `certificate relies on legacy Common Name field`。脚本已强制生成 SAN 并在签发后校验。
+  `certificate relies on legacy Common Name field`。脚本已强制生成 SAN 并在签发后回读校验。
 - **frpc 的 `serverAddr` 必须与 server.crt 的 SAN 对得上。** 不匹配时报
   `connect to server error: session shutdown`，frps 侧 debug 日志是
   `remote error: tls: bad certificate`。确实要用 IP 或容器名连，就在 frpc 侧开
   `insecureSkipVerify = true`。
+- **frps 配了 `trustedCaFile` 就会自动 `force = true`**，不用再手写
+  `transport.tls.force = true`，写了是冗余。
 
-frps 侧配了 `trustedCaFile` 就会自动 `force = true`，开始校验客户端身份 —— 这就是双向验证的开关。
+脚本跑完会打印可直接粘贴的 frps.toml / frpc.toml 片段和 volumes 行。
+
+已实测：生成的证书让真实的 frps + frpc 双向认证登录成功；只分发
+`ca.crt` + `client.*` 这个子集（不含 `ca.key`）同样能完成认证。
 
 ## 常用配置项
 
