@@ -98,6 +98,23 @@ jobs:
           done
           echo "✅ frpc and frps both report ${VERSION}"
 
+      # gen-cert.sh 生成的证书必须带 SAN —— Go 1.15+ 忽略 CN，
+      # 没有 SAN 的证书 frp 必然校验失败（这个坑真踩过）
+      - name: Cert generator smoke test
+        run: |
+          set -eu
+          OUT="$RUNNER_TEMP/certs"
+          ./frp/gen-cert.sh -d frps.example.com -o "$OUT" >/dev/null
+          openssl verify -CAfile "$OUT/ca.crt" "$OUT/server.crt"
+          openssl x509 -in "$OUT/server.crt" -noout -ext subjectAltName | grep -q "DNS:frps.example.com" \
+            || { echo "❌ server.crt 缺少 SAN" >&2; exit 1; }
+          # 通配符域名也要能签
+          ./frp/gen-cert.sh -d '*.example.com' -o "$RUNNER_TEMP/certs2" >/dev/null
+          openssl x509 -in "$RUNNER_TEMP/certs2/server.crt" -noout -ext subjectAltName \
+            | grep -q 'DNS:\*\.example\.com' \
+            || { echo "❌ 通配符 SAN 缺失" >&2; exit 1; }
+          echo "✅ gen-cert.sh produces SAN certificates frp can verify"
+
       # 端到端冒烟：起两个容器（frps + frpc），确认真的能登录并注册代理。
       # 配置校验只查结构，查不出"能不能连上"这类问题。
       - name: Smoke test (frps + frpc containers)

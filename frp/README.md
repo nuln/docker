@@ -11,7 +11,8 @@
 ```
 frp/
 ├── Dockerfile                    两个二进制 + 校验和 + UPX 压缩 + HEALTHCHECK
-├── entrypoint.sh                 唯一的脚本：选角色 / 启动 / 健康检查
+├── entrypoint.sh                 镜像内的脚本：选角色 / 启动 / 健康检查
+├── gen-cert.sh                   证书生成工具（在宿主机跑，不进镜像）
 ├── .gitignore
 └── README.md
 ```
@@ -154,6 +155,44 @@ frp 的子命令在两个角色上**不对称**（0.71.0 实测）：
 | `tcp` / `http` / `stcp` 等单代理快捷方式 | ❌ | ✅（自带参数，不用配置文件） |
 
 对 `frps` 用 `reload`/`status`，frp 自己会报 `unknown command`。服务端状态建议开 dashboard 后查 `/api/serverinfo`。
+
+## 传输层 TLS 证书
+
+frp 从 v0.50.0 起默认 `transport.tls.enable = true`，但不配证书时 **frps 用随机生成的证书、frpc 也不校验** —— 能防窃听，但识别不了中间人。配一套自己的 CA 就能互相验证身份。
+
+`gen-cert.sh` 在宿主机上生成（需要 `openssl`，产物在 `./certs`，已被 gitignore）：
+
+```bash
+./gen-cert.sh                                  # 交互式，问你域名
+./gen-cert.sh frps.example.com                 # 只签 frps 证书
+./gen-cert.sh '*.example.com,frps.example.com' # 通配符 + 具体域名
+./gen-cert.sh -d frps.example.com -o /etc/frp/certs -n 3650
+```
+
+| 参数 | 说明 |
+|---|---|
+| `-d, --domain` | 域名，逗号分隔；纯数字点开头自动识别为 IP；支持 `*` 通配 |
+| `-o, --out` | 输出目录，默认 `./certs` |
+| `-n, --days` | 证书有效期，默认 **36500 天（100 年）** |
+| `--server-only` | 不生成 client 证书 |
+| `--ca-cn` | CA 的 CN |
+
+产物：`ca.crt/ca.key`（两端共享）、`server.crt/server.key`（frps 用）、`client.crt/client.key`（双向验证时 frpc 用）。
+
+私有 CA 自己控制有效期，没有 Let's Encrypt 那种 90 天上限，所以默认直接拉到 100 年。代价是私钥泄露后无法靠续期解决，只能整个 CA 重建重签。
+
+脚本跑完会打印可直接粘贴的 frps.toml / frpc.toml 片段，以及 volumes 挂载方式。
+
+**两个容易踩的坑**（都实测过）：
+
+- **必须用 SAN 证书。** Go 1.15+ 废弃 CommonName，只写 `CN` 会报
+  `certificate relies on legacy Common Name field`。脚本已强制生成 SAN 并在签发后校验。
+- **frpc 的 `serverAddr` 必须与 server.crt 的 SAN 对得上。** 不匹配时报
+  `connect to server error: session shutdown`，frps 侧 debug 日志是
+  `remote error: tls: bad certificate`。确实要用 IP 或容器名连，就在 frpc 侧开
+  `insecureSkipVerify = true`。
+
+frps 侧配了 `trustedCaFile` 就会自动 `force = true`，开始校验客户端身份 —— 这就是双向验证的开关。
 
 ## 常用配置项
 

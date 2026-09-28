@@ -1,2 +1,5 @@
+# gen-cert.sh 生成的证书，绝不入库（私钥）
+certs/
+
 .DS_Store
 .vscode
