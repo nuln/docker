@@ -1,119 +1,120 @@
 #!/bin/sh
-# 生成 frp 传输层 TLS 证书（CA + frps 服务端证书 + frpc 客户端证书）。
+# 生成 frp 传输层 TLS 证书：CA + frps 服务端证书 + frpc 客户端证书。
 #
 # 背景：frp 从 v0.50.0 起默认 transport.tls.enable = true，但不配证书时
-# frps 用随机证书、frpc 也不校验 —— 能加密，但无法识别中间人。
-# 配了下面这套证书后，frpc/frps 用同一个 CA 互相验证身份。
+# frps 用随机生成的证书、frpc 也不校验 —— 能加密，但识别不了中间人。
+# 这套证书让 frpc / frps 用同一个 CA 互相验证身份。
 # 详见 https://gofrp.org/zh-cn/docs/features/common/network/network-tls/
 #
-# 用法：
-#   ./gen-cert.sh                                   # 交互式，问你域名
-#   ./gen-cert.sh frps.example.com                  # 只给 frps 签证书
-#   ./gen-cert.sh frps.example.com client.example.com   # 两边都签
-#   ./gen-cert.sh -d frps.example.com               # 等价于位置参数
-#   ./gen-cert.sh -d '*.example.com,frps.example.com'  # 通配符 SAN
-#   ./gen-cert.sh -d frps.example.com -o /etc/frp/certs -n 825
+# 用法：只给一个根域名，其余 SAN 自动生成
+#   ./gen-cert.sh                    # 交互式，问你根域名
+#   ./gen-cert.sh example.com
+#   ./gen-cert.sh -d example.com
+#   ./gen-cert.sh example.com -o /etc/frp/certs -n 3650
 #
-# 产物（默认 ./certs）：
-#   ca.crt / ca.key         自签 CA，两端共享
-#   server.crt / server.key frps 用，SAN = 你输入的域名
-#   client.crt / client.key frpc 用（双向验证时）
+# 生成的内容（默认 ./certs）：
+#   ca.crt / ca.key         私有 CA，frpc 和 frps 共用
+#   server.crt / server.key frps 用，CN = frps.<根域名>
+#   client.crt / client.key frpc 用，CN = frpc.<根域名>
+#
+# SAN 自动覆盖：根域名本身、*.根域名（任意子域）、frps./frpc.、localhost、
+# 127.0.0.1。所以客户端连 frps.根域名、连根域名、连 IP 都能通过校验。
 #
 set -eu
 
 OUT_DIR="./certs"
-# 私有 CA 自己控制有效期，没有 Let's Encrypt 那种 90 天上限，直接拉到最长。
-# 36500 天 = 100 年。代价是私钥泄露后无法靠续期解决，只能整个 CA 重建重签。
-DAYS_CA=36500
-DAYS_CERT=36500
-DOMAINS=""
-NO_CLIENT=0
-CA_CN="frp-ca"
+DAYS_CA=36500      # 100 年
+DAYS_CERT=36500    # 100 年
+ROOT=""
 
-usage() {
-    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
-    exit "${1:-0}"
-}
+usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        -d|--domain) DOMAINS="${2:-}"; shift 2 ;;
+        -d|--domain) ROOT="${2:-}"; shift 2 ;;
         -o|--out)    OUT_DIR="${2:-}"; shift 2 ;;
         -n|--days)   DAYS_CERT="${2:-}"; shift 2 ;;
-        --ca-cn)     CA_CN="${2:-}"; shift 2 ;;
-        --server-only) NO_CLIENT=1; shift ;;
         -h|--help)   usage 0 ;;
         -*)          echo "未知参数: $1" >&2; usage 1 ;;
-        *)           DOMAINS="${DOMAINS:+$DOMAINS,}$1"; shift ;;
+        *)           ROOT="$1"; shift ;;
     esac
 done
 
-# 没给域名就问
-if [ -z "$DOMAINS" ]; then
-    printf 'frps 的域名（可用逗号分隔多个 / 通配符，如 *.example.com）: '
-    read -r DOMAINS
-    [ -n "$DOMAINS" ] || { echo "域名不能为空" >&2; exit 1; }
+[ -n "$ROOT" ] || {
+    printf '根域名（证书会覆盖 根域名 / *.根域名 / frps.根域名 / frpc.根域名）: '
+    read -r ROOT
+    [ -n "$ROOT" ] || { echo "域名不能为空" >&2; exit 1; }
+}
+
+# 校验根域名：去掉误粘的协议/路径/结尾斜杠，然后要求至少两段、每段合法
+ROOT="${ROOT#*://}"
+ROOT="${ROOT%%/*}"
+ROOT="${ROOT%.}"
+case "$ROOT" in
+    *.*) ;;
+    # 用 ${ROOT} 定界：紧跟全角字符时某些 shell 会把「ROOT」整体当成变量名
+    *) echo "「${ROOT}」不像根域名（应形如 example.com）" >&2; exit 1 ;;
+esac
+if echo "$ROOT" | grep -qvE '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$'; then
+    echo "根域名含非法字符: ${ROOT}" >&2
+    echo "只允许字母、数字、连字符和点" >&2
+    exit 1
 fi
+case "$ROOT" in
+    *.*.*.*.*.*) echo "层级太深，不像根域名: ${ROOT}" >&2; exit 1 ;;
+esac
 
 command -v openssl >/dev/null 2>&1 || { echo "需要 openssl，请先安装" >&2; exit 1; }
+case "$DAYS_CERT" in
+    ''|*[!0-9]*) echo "-n 需要是正整数天数" >&2; exit 1 ;;
+esac
 
-# 域名合法性：只允许字母数字、点、横线、下划线、星号
-echo "$DOMAINS" | tr ',' '\n' | while read -r d; do
-    case "$d" in
-        *[!A-Za-z0-9.*_-]*) echo "域名含非法字符: $d" >&2; exit 1 ;;
-    esac
-done
+if [ -f "$OUT_DIR/ca.key" ]; then
+    echo "$OUT_DIR/ca.crt 已存在，不重复生成。如需重签请先删掉 $OUT_DIR" >&2
+    exit 1
+fi
 
-# 生成 SAN 值列表：a.com,*.a.com → DNS:a.com,DNS:*.a.com ；10.0.0.5 → IP:10.0.0.5
-# 注意这里只放值，"subjectAltName=" 前缀由下面配置文件的那行提供，不能重复写，
-# 否则 OpenSSL 会报 unsupported option: name=subjectAltName=IP
-echo "$DOMAINS" | tr ',' '\n' | while read -r d; do
-    [ -n "$d" ] || continue
-    case "$d" in
-        *[!0-9.]*) printf 'DNS:%s,' "$d" ;;   # 含字母 → 域名
-        *)         printf 'IP:%s,' "$d" ;;   # 纯数字点 → IP
-    esac
-done > /tmp/.frp_san.$$
-SAN="$(sed 's/,$//' /tmp/.frp_san.$$)"
-rm -f /tmp/.frp_san.$$
-[ -n "$SAN" ] || { echo "SAN 为空，检查域名参数" >&2; exit 1; }
-
-[ -f "$OUT_DIR/ca.key" ] && { echo "$OUT_DIR/ca.crt 已存在，不重复生成。如需重签请先删掉 $OUT_DIR" >&2; exit 1; }
+# SAN：根域名 + 通配符 + 两个约定子域 + 本机
+SAN="DNS:$ROOT,DNS:*.$ROOT,DNS:frps.$ROOT,DNS:frpc.$ROOT,DNS:localhost,IP:127.0.0.1"
 
 mkdir -p "$OUT_DIR"
 cd "$OUT_DIR"
 
-# Go 1.15+ 忽略 CN，必须用 SAN
+# Go 1.15+ 忽略 CN，必须带 SAN
 cat > san.cnf <<EOF
 [ req ]
 distinguished_name = dn
 req_extensions     = v3_req
 prompt             = no
 [ dn ]
-CN = frp-local
+# 这个 CN 实际不生效，openssl req 的 -subj 优先级更高；
+# 保留该段落只是因为 prompt = no 要求 distinguished_name 必须存在
+CN = unused
 [ v3_req ]
 basicConstraints = CA:FALSE
 keyUsage         = critical, digitalSignature, keyEncipherment
 extendedKeyUsage = serverAuth, clientAuth
 subjectAltName   = $SAN
 EOF
-echo "  SAN = $SAN"
 
+echo "==> 根域名: $ROOT"
+echo "==> SAN    : $SAN"
+echo
 echo "==> 生成 CA"
 openssl genrsa -out ca.key 2048 2>/dev/null
-openssl req -x509 -new -nodes -key ca.key -subj "/CN=$CA_CN" \
+openssl req -x509 -new -nodes -key ca.key -subj "/CN=frp-ca" \
     -days "$DAYS_CA" -out ca.crt 2>/dev/null
 
 sign() {
     _name="$1"; _cn="$2"
-    echo "==> 生成 $_name 证书"
+    echo "==> 生成 $_name 证书 (CN=$_cn)"
     openssl genrsa -out "$_name.key" 2048 2>/dev/null
     openssl req -new -key "$_name.key" -subj "/CN=$_cn" -config san.cnf -out "$_name.csr" 2>/dev/null
     openssl x509 -req -in "$_name.csr" -CA ca.crt -CAkey ca.key -CAcreateserial \
         -days "$DAYS_CERT" -sha256 -extfile san.cnf -extensions v3_req \
         -out "$_name.crt" 2>/dev/null
-    # 不带 -extensions v3_req 的话，签出来的证书一个扩展都没有（无 SAN）。
-    # Go 1.15+ 忽略 CN，frp 会直接判定校验失败 —— 所以这里当场验一下。
+    # 不带 -extensions v3_req 的话签出来一个扩展都没有（无 SAN），
+    # Go 1.15+ 忽略 CN，frp 必然校验失败 —— 所以当场验一下
     openssl x509 -in "$_name.crt" -noout -ext subjectAltName 2>/dev/null \
         | grep -q "Subject Alternative Name" \
         || { echo "生成的 $_name.crt 缺少 SAN 扩展，frp 会校验失败" >&2; exit 1; }
@@ -121,8 +122,8 @@ sign() {
     chmod 600 "$_name.key"
 }
 
-sign server "$(echo "$DOMAINS" | cut -d, -f1)"
-[ "$NO_CLIENT" = 0 ] && sign client frpc
+sign server "frps.$ROOT"
+sign client "frpc.$ROOT"
 
 rm -f san.cnf ca.srl
 chmod 600 ca.key
@@ -130,12 +131,11 @@ chmod 600 ca.key
 echo
 echo "==> 校验"
 for f in server client; do
-    [ -f "$f.crt" ] || continue
     printf "  %-12s %s\n" "$f.crt" "$(openssl x509 -in "$f.crt" -noout -subject | sed 's/subject=//')"
-    printf "  %-12s SAN: %s\n" "" "$(openssl x509 -in "$f.crt" -noout -ext subjectAltName 2>/dev/null | tail -1 | sed 's/^ *//')"
-    printf "  %-12s 到期: %s\n" "" "$(openssl x509 -in "$f.crt" -noout -enddate | sed 's/notAfter=//')"
+    printf "  %-12s 到期 %s\n" "" "$(openssl x509 -in "$f.crt" -noout -enddate | sed 's/notAfter=//')"
 done
-printf "  %-12s %s\n" "签名关系" "$(openssl verify -CAfile ca.crt server.crt 2>/dev/null | sed 's|.*: ||')"
+printf "  %-12s %s\n" "签名关系" "$(openssl verify -CAfile ca.crt server.crt client.crt 2>/dev/null | sed 's|.*: ||')"
+printf "  %-12s %s\n" "SAN" "$(openssl x509 -in server.crt -noout -ext subjectAltName 2>/dev/null | tail -1 | sed 's/^ *//')"
 printf "  %-12s %s\n" "CA 到期" "$(openssl x509 -in ca.crt -noout -enddate | sed 's/notAfter=//')"
 
 echo
@@ -144,7 +144,7 @@ find . -maxdepth 1 -type f | sed 's|^\./|  |' | sort
 
 cat <<EOF
 
-==> 挂载到容器（假设配置目录 ./conf 里放 frps.toml）
+==> 挂载到容器
   volumes:
     - ./conf:/etc/frp:ro
     - $(pwd):/etc/frp/certs:ro
@@ -158,11 +158,11 @@ cat <<EOF
   [transport.tls]
   certFile      = "/etc/frp/certs/server.crt"
   keyFile       = "/etc/frp/certs/server.key"
-  # frps 配了 trustedCaFile 就会自动 force = true，开始校验客户端身份
+  # frps 配了 trustedCaFile 就自动 force = true，开始校验客户端身份
   trustedCaFile = "/etc/frp/certs/ca.crt"
 
 ==> frpc.toml
-  serverAddr = "$DOMAINS"
+  serverAddr = "frps.$ROOT"
   serverPort = 7000
   [auth]
   method = "token"
@@ -170,19 +170,9 @@ cat <<EOF
 
   [transport.tls]
   trustedCaFile = "/etc/frp/certs/ca.crt"
-EOF
+  certFile      = "/etc/frp/certs/client.crt"
+  keyFile       = "/etc/frp/certs/client.key"
 
-if [ "$NO_CLIENT" = 0 ]; then
-cat <<EOF
-  certFile = "/etc/frp/certs/client.crt"
-  keyFile  = "/etc/frp/certs/client.key"
-EOF
-fi
-
-cat <<'EOF'
-
-⚠️  frpc 的 serverAddr 必须与 server.crt 的 SAN 对得上，否则登录失败：
-      frpc: connect to server error: session shutdown
-      frps: remote error: tls: bad certificate
-    确实要用 IP 或容器名连接时，在 frpc 侧开 insecureSkipVerify = true
+  # 客户端要连别的名字（IP、容器名、另一个域名）时加这行跳过主机名校验：
+  # insecureSkipVerify = true
 EOF
