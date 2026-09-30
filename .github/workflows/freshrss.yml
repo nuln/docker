@@ -175,30 +175,26 @@ jobs:
   # the matrix architecture, so the test scripts need no change.
   integration:
     needs: [version, build]
-    runs-on: ubuntu-latest
-    env:
-      DOCKER_DEFAULT_PLATFORM: ${{ matrix.platform }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: linux/amd64
-            image: ghcr.io/nuln/freshrss:latest
+            runner: ubuntu-latest
           - platform: linux/arm64
-            image: ghcr.io/nuln/freshrss:latest
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      DOCKER_DEFAULT_PLATFORM: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v7
 
-      # QEMU is only needed to *run* the arm64 image on an amd64 runner. Registering the emulator
-      # unconditionally made the amd64 leg depend on it as well, and an emulator-registration failure
-      # then took both legs down, so it is scoped to the leg that needs it. The cache is off because
-      # both legs tried to populate the same binfmt cache key at once.
-      - name: Set up QEMU
-        if: matrix.platform == 'linux/arm64'
-        uses: docker/setup-qemu-action@v4
-        with:
-          platforms: arm64
-          cache: false
+      # A native arm64 runner is used rather than QEMU emulation: `docker/setup-qemu-action` failed
+      # on this runner with "exec /usr/bin/binfmt: exec format error", which took the whole leg down
+      # before a single test ran. Running arm64 natively is also faster, and it exercises the real
+      # kernel instead of an emulator, which is what an arm64 user actually gets.
+      # `DOCKER_DEFAULT_PLATFORM` above makes both `docker pull` and `docker run` use the matrix
+      # architecture, so the test scripts need no change.
 
       - name: Pull image
         run: |

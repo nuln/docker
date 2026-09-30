@@ -113,7 +113,19 @@ body "${H1[@]}" "${U}${PREFIX}/i/?step=4" >/dev/null
 body "${H1[@]}" "${U}${PREFIX}/i/?step=5" >/dev/null
 
 [ -f "${DATA}/config.php" ] && ok "config.php written" || bad "config.php written" "<missing>" "file"
-[ -f "${DATA}/users/alice/config.php" ] && ok "user alice created" || bad "user alice created" "<missing>" "file"
+# The per-user config is written by the wizard from the Apache workers; a bind-mounted data
+# directory on a Linux runner can lag a moment behind the HTTP response, so poll briefly instead of
+# asserting once. On failure the directory is listed, so the next run is diagnosable without guesswork.
+user_file="${DATA}/users/alice/config.php"
+for _ in $(seq 1 20); do
+	[ -f "$user_file" ] && break
+	sleep 1
+done
+if [ -f "$user_file" ]; then
+	ok "user alice created"
+else
+	bad "user alice created" "$(ls -la "${DATA}/users" 2>&1 | tr '\n' ' ')" "file at ${user_file}"
+fi
 is "base_url stored as a path (not a pinned domain)" \
 	"$(sed -n "s/^[[:space:]]*'base_url' => \\(.*\\),$/\\1/p" "${DATA}/config.php" | tr -d "'")" "$PREFIX"
 [ -f "${DATA}/applied_migrations.txt" ] && ok "migrations applied, wizard over" \
