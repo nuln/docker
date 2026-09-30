@@ -1,0 +1,7 @@
+*
+!Dockerfile
+!patches/
+!patches/**
+!entrypoint.sh
+!healthcheck.sh
+!FreshRSS.Apache.conf

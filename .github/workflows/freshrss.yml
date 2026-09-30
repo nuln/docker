@@ -1,0 +1,208 @@
+name: freshrss
+
+# Only build when the freshrss/ subdirectory (or this workflow file) changes.
+on:
+  push:
+    branches: [master]
+    paths:
+      - "freshrss/**"
+      - ".github/workflows/freshrss.yml"
+  pull_request:
+    paths:
+      - "freshrss/**"
+  workflow_dispatch:
+    inputs:
+      freshrss_ref:
+        description: "FreshRSS commit to build (empty = the ARG pinned in freshrss/Dockerfile)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.ref.outputs.ref }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Resolve FreshRSS ref (dispatch input > Dockerfile ARG)
+        id: ref
+        run: |
+          ARG() {
+            awk -v k="$1" '$1=="ARG"{split($2,a,"="); if(a[1]==k){print a[2]; exit}}' freshrss/Dockerfile
+          }
+          REF="${{ github.event.inputs.freshrss_ref }}"
+          [ -n "$REF" ] || REF=$(ARG FRESHRSS_REF)
+          if [ -z "$REF" ]; then
+            echo "Could not resolve FRESHRSS_REF from freshrss/Dockerfile" >&2
+            exit 1
+          fi
+          echo "Building FreshRSS at ${REF}"
+          echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+
+  # The patch must apply to the pinned upstream tree, and the patched code must satisfy
+  # upstream's own quality gates (phpcs + PHPStan level 10 + the whole PHPUnit suite).
+  # Runs the real thing, in a container, against the same tree the image is built from.
+  patch:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Clone upstream FreshRSS at the pinned ref
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/frss
+          cd /tmp/frss
+          git init -q .
+          git remote add origin https://github.com/FreshRSS/FreshRSS.git
+          git fetch -q --depth 1 origin "${{ needs.version.outputs.ref }}"
+          git checkout -q FETCH_HEAD
+          git log -1 --format='FreshRSS %H (%ad)' --date=short
+
+      - name: The patch must apply cleanly
+        run: |
+          set -euo pipefail
+          cd /tmp/frss
+          if ! git apply --check "$GITHUB_WORKSPACE/freshrss/patches/0001-multi-domain-and-subdirectory.patch"; then
+            echo "::error::patches/0001-multi-domain-and-subdirectory.patch does not apply to ${{ needs.version.outputs.ref }}. Rebase it (see freshrss/README.md)."
+            exit 1
+          fi
+          git apply "$GITHUB_WORKSPACE/freshrss/patches/0001-multi-domain-and-subdirectory.patch"
+          echo "Patch applies cleanly."
+
+      - name: Install PHP + dev dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git unzip
+          docker run --rm -v /tmp/frss:/app -w /app composer:2 install \
+            --no-interaction --no-progress --ignore-platform-req=ext-gmp --ignore-platform-req=ext-intl
+
+      - name: phpcs
+        run: docker run --rm -v /tmp/frss:/app -w /app php:8.3-cli sh -c 'vendor/bin/phpcs . -p -s'
+
+      - name: PHPStan (level 10)
+        run: |
+          docker run --rm -v /tmp/frss:/app -w /app php:8.3-cli sh -c \
+            'vendor/bin/phpstan analyse -c phpstan.dist.neon --no-progress --memory-limit=2G'
+
+      - name: PHPUnit (whole suite; only the 3 upstream collation cases are tolerated)
+        run: |
+          set -uo pipefail
+          log="$(mktemp)"
+          docker run --rm -v /tmp/frss:/app -w /app php:8.3-cli sh -c \
+            'vendor/bin/phpunit --bootstrap ./tests/bootstrap.php ./tests' 2>&1 | tee "$log" || true
+
+          # Upstream ships three DatabaseDAOTest::test_strilike_MySQL data sets that fail on
+          # php:8.3-cli — a SQLite collation difference, verified identical on the unpatched tree at
+          # the same ref, and passing on the PHP build inside the image. They are tolerated by name
+          # rather than by tolerating a red suite, so a real regression still fails the build.
+          unexpected="$(grep -E '^[0-9]+\) ' "$log" | grep -v 'DatabaseDAOTest::test_strilike_MySQL' || true)"
+          if [ -n "$unexpected" ]; then
+            echo "::error::PHPUnit reported failures that are not the known collation cases:"
+            printf '%s\n' "$unexpected"
+            exit 1
+          fi
+          echo "Only the known pre-existing DatabaseDAOTest collation cases failed."
+
+      - name: The new regression tests must pass
+        run: |
+          docker run --rm -v /tmp/frss:/app -w /app php:8.3-cli sh -c \
+            'vendor/bin/phpunit --bootstrap ./tests/bootstrap.php tests/lib/Minz/RequestTest.php tests/lib/Minz/UrlTest.php'
+  build:
+    needs: [version, patch]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve the FreshRSS version for the image tag
+        id: ver
+        run: |
+          set -euo pipefail
+          git init -q frss-src
+          cd frss-src
+          git remote add origin https://github.com/FreshRSS/FreshRSS.git
+          git fetch -q --depth 1 origin "${{ needs.version.outputs.ref }}"
+          git checkout -q FETCH_HEAD
+          VERSION="$(grep -oE "FRESHRSS_VERSION = '[^']*'" constants.php | sed "s/.*'\(.*\)'/\1/")"
+          echo "FreshRSS ${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push (multi-arch)
+        uses: docker/build-push-action@v7
+        with:
+          context: freshrss
+          file: freshrss/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: |
+            ghcr.io/nuln/freshrss:latest
+            ghcr.io/nuln/freshrss:${{ steps.ver.outputs.version }}
+          build-args: |
+            FRESHRSS_REF=${{ needs.version.outputs.ref }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.ver.outputs.version }}
+            org.opencontainers.image.revision=${{ needs.version.outputs.ref }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # End-to-end: a real Apache + PHP + mod_auth_openidc stack behind a mock identity provider,
+  # plus a mock WebSub hub behind a prefix-preserving reverse proxy.
+  #
+  # Both architectures are exercised. arm64 runs under QEMU, which is slow, but it is the only way
+  # to catch an architecture-specific break in the patch (a wrong int size, an endianness assumption)
+  # before it reaches a user. DOCKER_DEFAULT_PLATFORM makes both `docker pull` and `docker run` use
+  # the matrix architecture, so the test scripts need no change.
+  integration:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    env:
+      DOCKER_DEFAULT_PLATFORM: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            image: ghcr.io/nuln/freshrss:latest
+          - platform: linux/arm64
+            image: ghcr.io/nuln/freshrss:latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up QEMU (needed for the arm64 leg)
+        uses: docker/setup-qemu-action@v4
+
+      - name: Pull image
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker pull ${{ matrix.image }}
+          docker image inspect ${{ matrix.image }} --format '{{.Os}}/{{.Architecture}}'
+
+      - name: Integration test (sub-directory, several domains, OIDC login, WebSub, strip mode)
+        run: ./freshrss/test/integration.sh ${{ matrix.image }}
+
+      # The functional test drives the whole product: installation wizard, challenge/response
+      # login, subscribing to a real feed, refreshing, reading, exports, both APIs, and the
+      # second domain. It needs the mock OIDC provider port free, so it runs after integration.
+      - name: Functional test (install → login → subscribe → read → API → 2nd domain)
+        run: ./freshrss/test/functional.sh ${{ matrix.image }}

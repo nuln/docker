@@ -1,0 +1,38 @@
+# Caddy reverse proxy for FreshRSS served from a sub-directory, reachable through several domains.
+#
+# The path MUST reach Apache unchanged. Do NOT use `handle_path` / `uri strip_prefix` /
+# `stripprefix` here: mod_auth_openidc compares OIDCRedirectURI against the path Apache itself
+# serves, so a proxy that strips the prefix makes OIDC impossible, and FreshRSS would not be
+# able to recover the prefix for cookie paths and generated links. The container serves the
+# prefix through an Apache `Alias` (see entrypoint.sh), so nothing is lost by not stripping.
+#
+# Replace `a.example` / `b.example` with your own domains, and make sure `FRESHRSS_PATH_PREFIX`
+# on the FreshRSS container matches the prefix used below (/rss here).
+
+(common) {
+	encode zstd gzip
+
+	# Overwrite the forwarding headers. FreshRSS and mod_auth_openidc trust
+	# X-Forwarded-Host: never let a client-supplied value through.
+	header_up X-Forwarded-Host {host}
+	header_up X-Forwarded-Proto {scheme}
+	header_up X-Forwarded-Port {server_port}
+
+	# The default prefix, so that a bare `/rss` reaches `/rss/` (the FreshRSS entry point).
+	redir /rss /rss/ 308
+
+	reverse_proxy freshrss:80
+}
+
+a.example {
+	import common
+}
+
+b.example {
+	import common
+}
+
+# Add as many domains as you like — a single container, a single configuration file.
+# cn.example.org {
+# 	import common
+# }

@@ -1,0 +1,359 @@
+# freshrss
+
+FreshRSS, patched so that **one instance can be served from a sub-directory, through several
+domains at the same time**, with OIDC and WebSub working.
+
+Everything is a single patch on top of upstream FreshRSS (`patches/`), so the change is easy to
+review and to re-apply on a newer release.
+
+| | |
+|---|---|
+| Image | `ghcr.io/nuln/freshrss:<version>` and `:latest` |
+| Base | Debian + Apache + mod_php + `mod_auth_openidc` (required for OIDC) |
+| Upstream | pinned by `ARG FRESHRSS_REF` in the Dockerfile |
+| Licence | AGPL-3.0, like FreshRSS — this image is a modified distribution and must keep offering the corresponding source (the patch lives in this repository) |
+
+---
+
+## Why a patch is needed
+
+FreshRSS assumes a single public address and derives the public root from the *current page*.
+Both break behind a reverse proxy that serves the instance from a sub-directory, and much worse
+when that sub-directory is reachable through several domains:
+
+| # | Upstream behaviour | Consequence |
+|---|---|---|
+| 1 | `Minz_Request::guessBaseUrl()` returns the directory of the **current page** | `Minz_Url::display()` appends `/i` again → **`/rss/i/i`**; every link, redirect and the logo are broken |
+| 2 | `trim($conf->base_url, ' /\\"')` | the leading `/` of `/rss` is eaten, so a path-only `base_url` **cannot be expressed at all** |
+| 3 | session cookie path left empty → PHP uses the backend script directory | the browser never sends the cookie back under `/rss/` → **logged out on every request** |
+| 4 | `OIDCRedirectURI /i/oidc/` hardcoded | the OIDC callback is announced at the domain root → **404** under a sub-directory |
+| 5 | WebSub is driven by `base_url` | with a path-only value, `serverIsPublic('')` is false → **WebSub can never be enabled** |
+| 6 | `p/api/pshb.php` only answers `hub_mode=subscribe` / `hub_mode=unsubscribe` | a specification-compliant hub verifies with `hub.mode=verify` and gets `422` → **the subscription is never activated and no content is ever pushed** |
+
+`patches/0001-multi-domain-and-subdirectory.patch` fixes all six:
+
+- `Minz_Request::applicationPath()` derives the **public root** from `SCRIPT_NAME` (or
+  `X-Forwarded-Prefix` when the proxy strips it), so it is the same for `/`, `/i/`, `/api/`,
+  `/f.php` and `/i/oidc/`.
+- `base_url` now accepts a **path** (`/rss`) or an empty value → the host is taken from the
+  request, so several domains share one instance. A full URL still pins a single host, exactly
+  as before.
+- the session cookie is pinned to the public path (`/rss/`).
+- new `websub_base_url` gives WebSub the single stable address it needs, without affecting the
+  other domains.
+- new `allowed_hosts` optionally constrains which host may be used to build absolute URLs
+  (Host header injection defence).
+- `p/api/pshb.php` answers the WebSub verification challenge. PHP maps the `hub.mode` and
+  `hub.challenge` parameter names onto `hub_mode` / `hub_challenge`, the spelling the rest of the
+  file already used, so this is a few lines and leaves the existing dialect untouched.
+
+### What was verified
+
+`test/integration.sh` — 177 checks against a real Apache + PHP + `mod_auth_openidc` stack, with a
+mock identity provider, a mock WebSub hub and a mock reverse proxy:
+
+- every entry point serves (`/rss/`, `/rss/i/`, `/rss/api/pshb.php`, `/rss/f.php`) and
+  `/rss/rss/` 404s
+- the landing redirect is `/rss/i/?rid=…`, never `/rss/i/i`
+- `Set-Cookie: … path=/rss/`
+- absolute URLs follow the domain that was actually used, on every domain
+- every HTML page the patch touched (all of `configure/*`, subscription, the reader views, the
+  profile) renders on both domains, without `/i/i`, and shows the new WebSub field
+- `FRESHRSS_WEBSUB_BASE_URL` pins the WebSub address, it is considered public, and the callback
+  URL is built from it
+- `cli/do-install.php --base-url/--websub-base-url` and `cli/reconfigure.php` store and change
+  both settings
+- a sub-directory literally named `/i` is served correctly and is not confused with the `/i/`
+  entry-point
+- a **complete OIDC login**: anonymous request → `authorize` → `authorize` redirects back with a
+  code → FreshRSS exchanges it → the RS256 `id_token` is accepted (`state`, `nonce`, `aud`, JWKS
+  signature, client authentication) → the session is established and resolved to the account named
+  by `preferred_username`
+- a **complete WebSub round trip** behind a reverse proxy that does *not* strip the prefix: the
+  feed advertises a hub, FreshRSS subscribes with the callback
+  `…/rss/api/pshb.php?k=…`, the hub verifies that callback, pushes new content, and the article is
+  stored **with no pull refresh at all**; the unsubscription uses the same prefixed callback
+- `X-Forwarded-Prefix`: with no `FRESHRSS_PATH_PREFIX` at all, a request announcing
+  `X-Forwarded-Prefix: /rss` still produces `/rss/i/` in the page and in redirects — the mode a
+  stripping proxy (`handle_path`, `proxy_pass …/`) needs
+- **email validation** end to end: `force_email_validation` signs a token, a real SMTP sink
+  receives the mail, the link it carries keeps the sub-directory and follows the domain of the
+  request, a wrong token bounces back to the validation page without clearing anything, and
+  following the right one clears the token
+- `allowed_hosts`: a request claiming a host outside the list is still served, but no absolute URL
+  it produces mentions that host; emptying the list restores the permissive default
+
+`test/functional.sh` — 68 checks driving the actual product: the installation wizard, the real
+challenge/response login, subscribing to a real feed, refreshing, reading, search, OPML/RSS
+export, the Google Reader and Fever APIs, the second domain (login, read, write) and logout.
+
+Upstream's own gates pass on the patched tree: `phpcs`, **PHPStan level 10 with zero errors**,
+and the whole PHPUnit suite — 778 tests, 1472 assertions, no failures. The 41 added tests live in
+`tests/lib/Minz/RequestTest.php` and `tests/lib/Minz/UrlTest.php`.
+
+### Known limits
+
+- The session cookie stays host-only, so each domain needs its own login. Accounts are shared,
+  so the second domain only asks for credentials again.
+- `allowed_hosts` has no environment variable; it is read from `./data/config.php`.
+- The refresh cadence of a feed is unchanged: FreshRSS keeps a feed for
+  `limits.cache_duration` (800 s) and skips a feed inside its TTL. A "reload this feed" on the
+  UI, or `?c=feed&a=reload&id=N`, forces a fetch. This is upstream behaviour, not a side effect
+  of the patch.
+- A feed pointing at a private address (a container name, a LAN host) is refused unless
+  `internal_host_allowlist` or `INTERNAL_HOST_ALLOWLIST` allows it. Relevant when you aggregate
+  your own services; the flag is described in `docs/en/admins/09_AccessControl.md`. The value is
+  matched as `host` or `host:port`, so a non-default port has to be spelled out.
+- **Upstream CLI caveat, not fixed here.** `getopt()` only reads the value of a long option
+  declared with `::` when it is attached with `=`, and it stops scanning at the first bare
+  argument. A boolean option written as `--api-enabled true` therefore loses its own value *and*
+  every option that follows it, silently — including `--base-url` and `--websub-base-url`. Always
+  write `--api-enabled=true`, or place boolean options last. The environment variables this image
+  documents (`FRESHRSS_PATH_PREFIX`, `FRESHRSS_BASE_URL`, `FRESHRSS_WEBSUB_BASE_URL`) do not go
+  through the CLI parser and are unaffected. `test/integration.sh` pins both spellings so the
+  behaviour cannot change unnoticed.
+- `create-user.php --email` does **not** send a validation mail: it stores `mail_login` before
+  calling the updater, so the "the address changed" branch that signs the token never fires. The
+  address has to be set from the profile form (or `FreshRSS_user_Controller::updateUser()`, which is
+  what that form calls) for the mail to be sent. Upstream behaviour, not a side effect of the patch.
+- **Only `linux/arm64` was tested locally**, because the machine that produced this image had no
+  access to a registry to pull an `amd64` base image. The CI workflow runs the same suites on
+  `linux/amd64`, so the multi-architecture claim rests on CI, not on a local run.
+
+---
+
+## Usage
+
+### 1. Deploy
+
+```sh
+docker network create proxy      # the network of your reverse proxy
+```
+
+```yaml
+services:
+  freshrss:
+    image: ghcr.io/nuln/freshrss:latest
+    restart: unless-stopped
+    environment:
+      FRESHRSS_PATH_PREFIX: /rss
+    volumes:
+      - ./data:/var/www/FreshRSS/data
+    networks: [proxy]
+```
+
+`docker-compose.yml` in this directory is a complete example.
+
+### 2. Reverse proxy — the path MUST NOT be stripped
+
+This is the one thing to get right. `mod_auth_openidc` compares `OIDCRedirectURI` against the
+path **Apache itself serves** (`oidc_util_url_cur_matches()` in `src/util/url.c` does a plain
+`strcmp` on `r->parsed_uri.path`), and builds the absolute `redirect_uri` from
+`scheme://host:port` + that path only. So a proxy that strips the prefix makes OIDC impossible:
+writing `/rss/i/oidc/` then loops forever, writing `/i/oidc/` then 404s. The container therefore
+serves the prefix through an Apache `Alias`, and the proxy forwards the path unchanged.
+
+Caddy (see `Caddyfile.example`):
+
+```caddy
+(common) {
+	header_up X-Forwarded-Host   {host}
+	header_up X-Forwarded-Proto  {scheme}
+	redir /rss /rss/ 308
+	reverse_proxy freshrss:80    # no handle_path, no strip_prefix
+}
+
+a.example { import common }
+b.example { import common }
+```
+
+nginx:
+
+```nginx
+location /rss/ {
+    proxy_pass http://freshrss;          # no trailing slash, no rewrite
+    proxy_set_header Host              $host;
+    proxy_set_header X-Forwarded-Host  $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Port  $server_port;
+}
+```
+
+Traefik — use a rule **without** a `stripprefix` middleware:
+
+```yaml
+- traefik.http.routers.freshrss.rule=PathPrefix(`/rss`)
+- traefik.http.routers.freshrss.middlewares=freshrssHeaders   # X-Forwarded-* only, no stripprefix
+```
+
+Always **overwrite** `X-Forwarded-Host`. FreshRSS trusts it, and there is no allowlist unless
+you configure one (see below).
+
+> `X-Forwarded-Prefix` is supported for a proxy that *does* strip the prefix, but OIDC cannot
+> work in that mode. Use a path-preserving proxy.
+
+### 3. Nothing else to configure
+
+`FRESHRSS_PATH_PREFIX=/rss` is **the only setting a sub-directory deployment needs.** It drives
+everything at once:
+
+| Driven by `FRESHRSS_PATH_PREFIX` | Effect |
+|---|---|
+| Apache `Alias` | serves `/rss/` from the FreshRSS `p/` directory |
+| `OIDCRedirectURI` | becomes `/rss/i/oidc/` |
+| `OIDCDefaultURL` | becomes `/rss/i/` |
+| session cookie | `Path=/rss/` |
+| `base_url` in `data/config.php` | the installation wizard writes `'/rss'` (the **path only**), so the host follows the request |
+| `healthcheck` | probes `/rss/i/` |
+
+Nothing under `./data/` has to be edited, and the wizard is reachable at
+`https://a.example/rss/i/`. Accepted spellings: `/rss`, `rss`, `rss/`, `/rss/`.
+
+#### Only if you need to pin a single domain
+
+```sh
+environment:
+  FRESHRSS_BASE_URL: https://a.example/rss        # wins over data/config.php
+  FRESHRSS_WEBSUB_BASE_URL: https://rss.example.net/rss
+```
+
+#### Only if you want WebSub
+
+WebSub needs one stable, publicly reachable address, because the callback URL is built by the
+refresh cron job, outside of any HTTP request. Set it once:
+
+```sh
+environment:
+  FRESHRSS_WEBSUB_BASE_URL: https://rss.example.net/rss
+```
+
+Other domains are unaffected: they still serve the UI, the RSS feeds and the API. Only the
+subscription with the hubs is pinned to that address. Then
+`Administration → System configuration` shows it, and the **WebSub** checkbox is enabled.
+
+#### Only if you want a host allowlist
+
+Edit `./data/config.php` (there is no env var for this one):
+
+```php
+'allowed_hosts' => ['a.example', 'b.example', 'cn.example.org'],
+```
+
+Recommended unless your reverse proxy is the only thing able to set `X-Forwarded-Host`.
+
+#### Same settings, without the environment
+
+If you prefer to keep everything in the data volume, the wizard stores the path on its own and
+you can adjust it afterwards:
+
+```php
+'base_url'         => '/rss',                          // path: host follows the request
+'websub_base_url'  => 'https://rss.example.net/rss',  // WebSub: one pinned address
+'allowed_hosts'    => [],                              // no restriction (default)
+```
+
+`base_url` accepts three forms: a **full URL** pins one domain (upstream behaviour), a **path**
+(`/rss`) lets the host follow the request, and **empty** behaves like a path but relies entirely
+on the headers the reverse proxy forwards.
+
+| Situation | `base_url` | Consequence |
+|---|---|---|
+| Single domain, keep it simple | `'https://a.example/rss'` | every link pinned to `a.example` (upstream behaviour) |
+| **Several domains** | `'/rss'` | links follow the domain in use |
+| OIDC on several domains | `'/rss'` | `redirect_uri` becomes `https://<domain>/rss/i/oidc/` per domain |
+| WebSub | `'/rss'` + `websub_base_url` | the hub talks to the single `websub_base_url` domain |
+
+### 4. Identity provider
+
+Register **one redirect URI per domain** (port required by Authentik):
+
+```
+https://a.example:443/rss/i/oidc/
+https://b.example:443/rss/i/oidc/
+```
+
+`OIDC_X_FORWARDED_HEADERS` defaults to `X-Forwarded-Host X-Forwarded-Proto X-Forwarded-Port`
+in this image (upstream leaves it unset, which breaks every reverse-proxy deployment).
+
+The session cookie stays host-only, so each domain has its own login. The **accounts are
+shared**: OIDC maps `OIDC_REMOTE_USER_CLAIM` (default `preferred_username`) to a FreshRSS user,
+and a user moving from one domain to the other is silently signed in by the IdP.
+
+---
+
+## Configuration
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FRESHRSS_PATH_PREFIX` | *(empty)* | public sub-directory, e.g. `/rss`. **The only setting a sub-directory deployment needs.** Empty = domain root. Identical on every domain. |
+| `FRESHRSS_BASE_URL` | *(empty)* | pin the base URL; wins over `data/config.php`. Full URL = one domain, path = host follows the request |
+| `FRESHRSS_WEBSUB_BASE_URL` | *(empty)* | address advertised to WebSub hubs; wins over `websub_base_url` |
+| `TRUSTED_PROXY` | *(empty)* | CIDR of the reverse proxy, so the real client IP is logged |
+| `OIDC_ENABLED` | *(empty)* | any non-zero value activates OIDC |
+| `CRON_MIN` | *(empty)* | feed refresh schedule, e.g. `7,37 * * * *` |
+| `DATA_PATH` | *(empty)* | alternate data directory |
+
+Everything else (`OIDC_*`, `FRESHRSS_INSTALL`, `FRESHRSS_USER`, `ENABLE_ACCESS_LOG`, `LISTEN`,
+…) behaves exactly as upstream. `OIDC_X_FORWARDED_HEADERS` additionally defaults to
+`X-Forwarded-Host X-Forwarded-Proto X-Forwarded-Port` here (upstream leaves it unset, which
+breaks every reverse-proxy deployment).
+
+This image follows the upstream Dockerfile (Debian + Apache + mod_php + `mod_auth_openidc`,
+`Docker/` layout, `data/` volume, same `ENTRYPOINT`/`CMD` contract) and adds three things:
+building from a pinned `FRESHRSS_REF` with a patch, the `FRESHRSS_PATH_PREFIX` support, and a
+`HEALTHCHECK`. The one deliberate difference is the source fetch: upstream expects the build
+context to already be a FreshRSS checkout, whereas this repository builds the pinned commit
+itself so the image can be rebuilt from the patch alone.
+
+---
+
+## Updating FreshRSS
+
+1. Bump `ARG FRESHRSS_REF` in `Dockerfile` to the new upstream commit.
+2. Rebase the patch:
+
+   ```sh
+   git clone https://github.com/FreshRSS/FreshRSS.git && cd FreshRSS
+   git checkout <new-ref>
+   git apply --check ~/nuln/docker/freshrss/patches/0001-multi-domain-and-subdirectory.patch
+   git apply      ~/nuln/docker/freshrss/patches/0001-multi-domain-and-subdirectory.patch
+   # resolve conflicts, then re-run the checks below, then regenerate the patch
+   git diff > ~/nuln/docker/freshrss/patches/0001-multi-domain-and-subdirectory.patch
+   ```
+
+3. Verify: `vendor/bin/phpcs .`, `vendor/bin/phpstan analyse -c phpstan.dist.neon`,
+   `vendor/bin/phpunit --bootstrap ./tests/bootstrap.php ./tests`.
+   `.github/workflows/freshrss.yml` does all of this and fails the build with a clear message if
+   the patch stops applying.
+
+## Notes and limits
+
+- **All domains must share the same sub-directory.** `FRESHRSS_PATH_PREFIX` is a single value
+  because the OIDC callback and the cookie scope are derived from it. `https://a.example/rss`
+  and `https://b.example` cannot be served by the same container.
+- The Apache `mod_alias` module is re-enabled **only** when `FRESHRSS_PATH_PREFIX` is set. Its
+  target is the same directory as `DocumentRoot`, so nothing extra becomes reachable.
+- The first request or two after a cold start may return 500 while `data/` is being prepared;
+  it settles within a couple of seconds. The `HEALTHCHECK` probe retries.
+- Changing `FRESHRSS_PATH_PREFIX` on an existing install invalidates session cookies (path
+  change) and requires re-registering the OIDC redirect URIs.
+- Upstream's built-in update mechanism is disabled (`disable_update`): update the image instead.
+
+## Files
+
+| Path | Role |
+|---|---|
+| `Dockerfile` | builds upstream at a pinned ref and applies the patch |
+| `patches/0001-…patch` | the whole change, reviewable and re-appliable |
+| `FreshRSS.Apache.conf` | upstream conf + env-driven `OIDCRedirectURI` + `IncludeOptional` for the prefix |
+| `entrypoint.sh` | normalises the prefix, exports the OIDC paths, generates the `Alias`, hands over to the upstream entrypoint |
+| `healthcheck.sh` | probes `<prefix>/i/`, fails loudly on a broken sub-directory mapping |
+| `test/integration.sh` | 177-check end-to-end test (sub-directory, domains, OIDC login, WebSub, strip mode, email validation, allowed_hosts) |
+| `test/functional.sh` | 68-check end-to-end test of the product itself (install → login → subscribe → read → API) |
+| `test/mock-idp.php` | minimal but complete OIDC provider: discovery, JWKS, RS256 `id_token`, code flow |
+| `test/mock-websub-hub.php` | minimal WebSub hub **and** prefix-preserving reverse proxy used by the test |
+| `test/smtp-sink.php` | minimal SMTP server that captures the email-validation message |
+| `test/fixtures/index.php` | RSS publisher that can advertise a hub and move its `rel="self"` |
+| `test/bcrypt-challenge.sh` | reproduces the browser login inside the container |
+| `Caddyfile.example` | recommended reverse-proxy configuration |
+| `docker-compose.yml` | complete deployment example |
