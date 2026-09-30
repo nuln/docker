@@ -8,7 +8,7 @@ review and to re-apply on a newer release.
 
 | | |
 |---|---|
-| Image | `ghcr.io/nuln/freshrss:<version>` and `:latest` |
+| Image | `ghcr.io/nuln/freshrss:1.30.0` (pinned upstream version) and `:latest` — **private package, see "Pulling the image"** |
 | Base | Debian + Apache + mod_php + `mod_auth_openidc` (required for OIDC) |
 | Upstream | **1.30.0** (the latest release), pinned by commit in `ARG FRESHRSS_REF` |
 | Licence | AGPL-3.0, like FreshRSS — this image is a modified distribution and must keep offering the corresponding source (the patch lives in this repository) |
@@ -153,6 +153,38 @@ and the whole PHPUnit suite — 778 tests, 1472 assertions, no failures. The 41 
   access to a registry to pull an `amd64` base image. The CI workflow runs the same suites on
   `linux/amd64`, so the multi-architecture claim rests on CI, not on a local run.
 
+### Pulling the image
+
+The package on GitHub Container Registry is **private**, so a plain `docker pull` is refused. Pick
+whichever suits the deployment:
+
+```sh
+# 1. Authenticate once with a personal access token that has the `read:packages` scope
+#    (classic token: "read:packages"; fine-grained token: Packages → Read).
+echo "$GHCR_TOKEN" | docker login ghcr.io -u nuln --password-stdin
+docker pull ghcr.io/nuln/freshrss:1.30.0
+
+# 2. Or make the package public once, in the GitHub UI, and then no credentials are needed at all:
+#    https://github.com/users/nuln/packages/container/package/freshrss/settings
+#    → "Change visibility" → Public. Recommended for anything that is not secret: the image is a
+#    public build of a public project, and this repository already holds its source.
+```
+
+The published tags are the upstream version the patch is based on — currently **`1.30.0`** — plus
+**`latest`**. Both point at the same multi-architecture manifest (`linux/amd64` and `linux/arm64`),
+so the right thing to deploy is the version tag, not `latest`:
+
+```yaml
+services:
+  freshrss:
+    image: ghcr.io/nuln/freshrss:1.30.0   # pinned; `latest` moves
+```
+
+Pin by digest if the deployment must be byte-reproducible:
+
+```sh
+docker pull ghcr.io/nuln/freshrss@sha256:a5f834f74b47f8a33eb949051e5145af7a81c4d777a2af89e3f938b9e5a5d755
+```
 ---
 
 ## Usage
