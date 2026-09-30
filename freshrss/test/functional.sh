@@ -48,7 +48,7 @@ field() { printf '%s' "$1" | sed -n "s/.*name=\"$2\" value=\"\\([^\"]*\\)\".*/\\
 cleanup() {
 	docker rm -f frss-fn feed-fn >/dev/null 2>&1
 	docker network rm "$NET" >/dev/null 2>&1
-	rm -rf "$DATA" "$JAR" "$JAR2" "$PUB_DIR"
+	rm -rf "$DATA" "$JAR" "$JAR2" "$PUB_DIR" 2>/dev/null || true
 }
 trap cleanup EXIT
 

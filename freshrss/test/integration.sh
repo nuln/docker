@@ -205,7 +205,7 @@ else
 fi
 rm -f "$JAR"
 docker rm -f frss-env >/dev/null 2>&1
-rm -rf "$DATA_DIR"
+rm -rf "$DATA_DIR" 2>/dev/null || true
 
 # FRESHRSS_BASE_URL must win over whatever the wizard wrote, so that the data volume never has
 # to be edited by hand.
@@ -225,7 +225,7 @@ written2=$(sed -n "s/^[[:space:]]*'base_url' => \\(.*\\),\$/\\1/p" "${DATA_DIR2}
 is "FRESHRSS_BASE_URL overrides the wizard" "$written2" 'https://pinned.example/rss'
 rm -f "$JAR2"
 docker rm -f frss-env2 >/dev/null 2>&1
-rm -rf "$DATA_DIR2"
+rm -rf "$DATA_DIR2" 2>/dev/null || true
 
 echo
 echo "== 5a. X-Forwarded-Prefix: a proxy that strips the prefix"
@@ -266,7 +266,7 @@ hasnt "…and the prefix is not doubled"            "$strip_html" "${PREFIX}${PR
 is "without the header the application is at the root" \
 	"$(get "http://127.0.0.1:${STRIP_PORT}/i/" | grep -c "${PREFIX}/i/" || true)" "0"
 docker rm -f frss-strip >/dev/null 2>&1
-rm -rf "$DATA_STRIP"
+rm -rf "$DATA_STRIP" 2>/dev/null || true
 
 echo
 echo "== 5b. configuration surfaces the patch introduced"
@@ -386,7 +386,7 @@ is "the callback URL is built from it" \
 is "the callback endpoint answers on that path" \
 	"$(status "http://127.0.0.1:${WSUB_PORT}${PREFIX}/api/pshb.php?k=deadbeef")" "410"
 docker rm -f frss-wsub >/dev/null 2>&1
-rm -rf "$DATA_W"
+rm -rf "$DATA_W" 2>/dev/null || true
 
 echo
 echo "== 5d. CLI: --websub-base-url and --base-url"
@@ -412,7 +412,7 @@ is "reconfigure --base-url applied" \
 is "reconfigure --websub-base-url applied" \
 	"$(sed -n "s/^[[:space:]]*'websub_base_url' => \(.*\),\$/\1/p" "${DATA_C}/config.php" | tr -d "'")" 'https://other.example/rss'
 docker rm -f frss-cli >/dev/null 2>&1
-rm -rf "$DATA_C"
+rm -rf "$DATA_C" 2>/dev/null || true
 
 # Pinned upstream limitation, asserted rather than left as a landmine. `getopt()` reads the value of
 # a long option declared with `::` only when it is attached with `=`, and it stops scanning at the
@@ -439,12 +439,12 @@ is "a boolean written as --flag=value keeps the options that follow" \
 	"$(sed -n "s/^[[:space:]]*'base_url' => \(.*\),\$/\1/p" "${DATA_D}/config.php" | tr -d "'")" 'https://pinned.example/rss'
 is "…and takes the value it was given" \
 	"$(sed -n "s/^[[:space:]]*'api_enabled' => \(.*\),\$/\1/p" "${DATA_D}/config.php" | tr -d "'")" 'true'
-rm -rf "$DATA_D"
+rm -rf "$DATA_D" 2>/dev/null || true
 DATA_D="$(mktemp -d)"
 install_flags "$DATA_D" --api-enabled true --base-url https://pinned.example/rss
 is "a boolean written as --flag value is documented to swallow what follows" \
 	"$(sed -n "s/^[[:space:]]*'base_url' => \(.*\),\$/\1/p" "${DATA_D}/config.php" | tr -d "'")" "${PREFIX}"
-rm -rf "$DATA_D"
+rm -rf "$DATA_D" 2>/dev/null || true
 
 echo
 echo "== 5e. a sub-directory named /i is unambiguous"
@@ -700,7 +700,7 @@ has "…and it completed the verification" "$hublog" 'echoed=yes'
 subs=$(get "http://127.0.0.1:${HUB_PORT}/subs")
 hasnt "the hub dropped the topic" "$subs" "\"${TOPIC}\""
 docker rm -f frss-wsub2 websub-hub publisher >/dev/null 2>&1
-rm -rf "$HUB_STATE" "$PUB_STATE" "$DATA_G"
+rm -rf "$HUB_STATE" "$PUB_STATE" "$DATA_G" 2>/dev/null || true
 
 echo
 echo
@@ -835,7 +835,7 @@ again_loc=$(loc "$(header "${MAIL_H[@]}" "http://127.0.0.1:${MAIL_PORT}${MAIL_PA
 has "following it a second time is harmless" "$again_loc" "${PREFIX}/i/"
 
 docker rm -f frss-mail smtp-sink >/dev/null 2>&1
-rm -rf "$MAIL_STATE" "$DATA_M"
+rm -rf "$MAIL_STATE" "$DATA_M" 2>/dev/null || true
 
 echo
 echo
@@ -894,7 +894,7 @@ docker exec frss-hosts php -r '
 has "…and the spoofed host is used again over HTTP" "$(rss_for evil.example)" "<link>https://evil.example${PREFIX}</link>"
 
 docker rm -f frss-hosts >/dev/null 2>&1
-rm -rf "$DATA_H"
+rm -rf "$DATA_H" 2>/dev/null || true
 
 echo
 echo "== 6. domain-root deployment keeps upstream behaviour"
