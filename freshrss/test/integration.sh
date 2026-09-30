@@ -657,6 +657,33 @@ is "FreshRSS considers the feed WebSub-enabled" \
 			if ($f->url() === "'"$TOPIC"'") { echo $f->pubSubHubbubEnabled() ? "yes" : "no"; break; }
 		}
 	' 2>/dev/null)" "yes"
+# The WebSub state lives on disk, written by root (the CLI and the refresh cron run as root) and
+# read by the Apache workers (www-data). That only works if those directories are group-accessible
+# to www-data. Docker Desktop's file sharing bypasses permission checks, so a macOS run cannot
+# observe a regression here at all; the probe below detects that and skips instead of pretending.
+PSHB_KEY=$(docker exec frss-wsub2 sh -c \
+	'ls /var/www/FreshRSS/data/PubSubHubbub/keys/*.txt 2>/dev/null | head -1' || true)
+perm_enforced=$(docker exec frss-wsub2 sh -c '
+	p=/var/www/FreshRSS/data/.permprobe
+	rm -rf "$p" 2>/dev/null
+	mkdir -p "$p" 2>/dev/null
+	chown :www-data "$p" 2>/dev/null
+	g=$(stat -c %G "$p" 2>/dev/null)
+	rm -rf "$p" 2>/dev/null
+	[ "$g" = "www-data" ] && echo yes || echo no' 2>/dev/null || echo no)
+if [ "$perm_enforced" != "yes" ]; then
+	ok "WebSub state permissions not enforceable on this filesystem (Docker Desktop) — check skipped"
+elif [ -n "$PSHB_KEY" ]; then
+	ws_mode=$(docker exec frss-wsub2 stat -c '%a %G' "$(dirname "${PSHB_KEY}")" 2>/dev/null || echo '?')
+	has "the WebSub key directory is group-owned by the Apache group" "$ws_mode" "www-data"
+	if docker exec frss-wsub2 sh -c "setpriv --reuid=33 --regid=33 --clear-groups cat '${PSHB_KEY}'" >/dev/null 2>&1; then
+		ok "the Apache worker (www-data) can read the WebSub key file"
+	else
+		bad "the Apache worker (www-data) can read the WebSub key file" "permission denied" "readable"
+	fi
+else
+	bad "the WebSub key directory is group-owned by the Apache group" "<no key file>" "a key file"
+fi
 
 # Content distribution: publish, then let the hub push. No pull refresh is issued in between.
 count_entries() {

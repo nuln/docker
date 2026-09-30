@@ -34,6 +34,42 @@ export OIDC_X_FORWARDED_HEADERS="${OIDC_X_FORWARDED_HEADERS:-X-Forwarded-Host X-
 echo "FreshRSS: public path prefix = '${FRESHRSS_PATH_PREFIX:-/ (domain root)}'"
 
 # --------------------------------------------------------------------------------------------
+# 1b. Make the data directory usable by the Apache workers.
+# --------------------------------------------------------------------------------------------
+# FreshRSS keeps per-feed WebSub state in data/PubSubHubbub/ (one directory per topic, plus a key
+# file per subscription). Those are created by *root* — the CLI and the refresh cron run as root —
+# with mode 0770, which the 022 umask turns into 0750 owned by root:root. The Apache workers run as
+# www-data, which is neither the owner nor in group root, so they cannot traverse into those
+# directories and every WebSub callback answers 410 "Feed info not found!".
+#
+# Two things prevent it, and both are needed:
+#   * a group-friendly umask, so anything this entrypoint's children create is group-accessible;
+#   * setgid on the data directories, so a subdirectory created *later* by root inherits the
+#     www-data group instead of root's.
+# Without setgid, fixing the permissions once at start-up is not enough: the first actualisation
+# after that creates fresh directories with the wrong group again.
+# (Invisible when testing on macOS or Windows: Docker Desktop's file sharing bypasses these checks.)
+if [ "$(id -u)" = "0" ] && [ -d "${FRESH_RSS_ROOT}/data" ]; then
+	umask 002
+	www_group=''
+	for candidate in www-data apache http; do
+		if getent group "$candidate" >/dev/null 2>&1; then
+			www_group="$candidate"
+			break
+		fi
+	done
+	if [ -n "$www_group" ]; then
+		chown -R ":${www_group}" "${FRESH_RSS_ROOT}/data" 2>/dev/null || true
+		chmod -R g+rX "${FRESH_RSS_ROOT}/data" 2>/dev/null || true
+		chmod -R g+w "${FRESH_RSS_ROOT}/data" 2>/dev/null || true
+		find "${FRESH_RSS_ROOT}/data" -type d -exec chmod g+s {} + 2>/dev/null || true
+		echo "FreshRSS: data/ is group-writable by ${www_group} (setgid), so WebSub state stays reachable"
+	else
+		echo "FreshRSS: WARNING — no Apache group {www-data, apache, http} found; WebSub callbacks may answer 410" >&2
+	fi
+fi
+
+# --------------------------------------------------------------------------------------------
 # 2. Serve the public prefix from the FreshRSS `p/` directory.
 # --------------------------------------------------------------------------------------------
 # The reverse proxy forwards the path unchanged and Apache aliases the prefix, so that:

@@ -49,7 +49,7 @@ when that sub-directory is reachable through several domains:
 
 ### What was verified
 
-`test/integration.sh` — 177 checks against a real Apache + PHP + `mod_auth_openidc` stack, with a
+`test/integration.sh` — 178 checks against a real Apache + PHP + `mod_auth_openidc` stack, with a
 mock identity provider, a mock WebSub hub and a mock reverse proxy:
 
 - every entry point serves (`/rss/`, `/rss/i/`, `/rss/api/pshb.php`, `/rss/f.php`) and
@@ -100,6 +100,16 @@ and the whole PHPUnit suite — 778 tests, 1472 assertions, no failures. The 41 
   `limits.cache_duration` (800 s) and skips a feed inside its TTL. A "reload this feed" on the
   UI, or `?c=feed&a=reload&id=N`, forces a fetch. This is upstream behaviour, not a side effect
   of the patch.
+- **`data/` is made group-accessible to the Apache group at start-up, and the directories are setgid.**
+  FreshRSS creates its per-feed WebSub state (`data/PubSubHubbub/…`) as *root* with mode `0770`,
+  which the default `022` umask turns into `0750 root:root`. The Apache workers run as `www-data`,
+  which is neither the owner nor in group root, so they cannot traverse into it and every WebSub
+  callback answers `410 Feed info not found!`. This is invisible on macOS or Windows, where Docker
+  Desktop bypasses permission checks, and it breaks any deployment that bind-mounts `data/` — the
+  documented Compose setup included. The entrypoint therefore sets a group-friendly umask, makes
+  `data/` group-writable, and marks the directories setgid so that state created *later* by root
+  inherits the right group. `test/integration.sh` asserts it with the real `www-data` uid, and skips
+  that assertion when the filesystem does not enforce permissions.
 - A feed pointing at a private address (a container name, a LAN host) is refused unless
   `internal_host_allowlist` or `INTERNAL_HOST_ALLOWLIST` allows it. Relevant when you aggregate
   your own services; the flag is described in `docs/en/admins/09_AccessControl.md`. The value is
@@ -348,7 +358,7 @@ itself so the image can be rebuilt from the patch alone.
 | `FreshRSS.Apache.conf` | upstream conf + env-driven `OIDCRedirectURI` + `IncludeOptional` for the prefix |
 | `entrypoint.sh` | normalises the prefix, exports the OIDC paths, generates the `Alias`, hands over to the upstream entrypoint |
 | `healthcheck.sh` | probes `<prefix>/i/`, fails loudly on a broken sub-directory mapping |
-| `test/integration.sh` | 177-check end-to-end test (sub-directory, domains, OIDC login, WebSub, strip mode, email validation, allowed_hosts) |
+| `test/integration.sh` | 178-check end-to-end test (sub-directory, domains, OIDC login, WebSub, strip mode, email validation, allowed_hosts) |
 | `test/functional.sh` | 68-check end-to-end test of the product itself (install → login → subscribe → read → API) |
 | `test/mock-idp.php` | minimal but complete OIDC provider: discovery, JWKS, RS256 `id_token`, code flow |
 | `test/mock-websub-hub.php` | minimal WebSub hub **and** prefix-preserving reverse proxy used by the test |
