@@ -113,25 +113,24 @@ body "${H1[@]}" "${U}${PREFIX}/i/?step=4" >/dev/null
 body "${H1[@]}" "${U}${PREFIX}/i/?step=5" >/dev/null
 
 [ -f "${DATA}/config.php" ] && ok "config.php written" || bad "config.php written" "<missing>" "file"
-user_file="${DATA}/users/alice/config.php"
+# The per-user config must be asserted from inside the container. The wizard creates it as www-data
+# with mode 0770 under a setgid parent, so the directory is www-data:www-data with no "other"
+# bits: on a Linux runner the invoking user cannot traverse into it and a host-side `test -f` reports
+# a file that demonstrably exists as missing. Docker Desktop ignores these checks, which is why this
+# only ever failed on CI.
+user_conf=/var/www/FreshRSS/data/users/alice/config.php
 for _ in $(seq 1 20); do
-	[ -f "$user_file" ] && break
+	docker exec frss-fn test -f "$user_conf" >/dev/null 2>&1 && break
 	sleep 1
 done
-if [ -f "$user_file" ]; then
+if docker exec frss-fn test -f "$user_conf" >/dev/null 2>&1; then
 	ok "user alice created"
 else
-	# Three independent views, because a bind-mounted data directory behaves differently on a Linux
-	# runner than on Docker Desktop and a bare "<missing>" says nothing about why: the database (the
-	# authoritative one), the container's own filesystem, and the host's bind mount.
 	in_db=$(docker exec frss-fn php /var/www/FreshRSS/cli/list-users.php 2>/dev/null | tr '\n' ' ')
 	in_fs=$(docker exec frss-fn sh -c \
 		'find /var/www/FreshRSS/data/users -maxdepth 2 -printf "%M %u:%g %p\n" 2>&1' 2>/dev/null \
 		| tr '\n' ' | ' || true)
-	on_host=$(ls -la "${DATA}/users" 2>&1 | tr '\n' ' ')
-	bad "user alice created" \
-		"db=[${in_db}] container=[${in_fs}] host=[${on_host}]" \
-		"file at ${user_file}"
+	bad "user alice created" "db=[${in_db}] container=[${in_fs}]" "file at ${user_conf}"
 fi
 is "base_url stored as a path (not a pinned domain)" \
 	"$(sed -n "s/^[[:space:]]*'base_url' => \\(.*\\),$/\\1/p" "${DATA}/config.php" | tr -d "'")" "$PREFIX"
