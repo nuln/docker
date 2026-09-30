@@ -38,9 +38,9 @@ RUN apt-get update && \
 RUN mkdir -p /var/www/FreshRSS/ /run/apache2/ /usr/src/freshrss-patches
 
 # Upstream revision this image is built from. Bump it (and re-apply `patches/`) to update.
-ARG FRESHRSS_REF=a8e5e6300b80514d5a14140566c2386a80cf8450
+ARG FRESHRSS_REF=62eb3b405e94dd7bc9f1e9e9c788ee3f69d6ed74
 # Base branch, only used to give `git checkout` a name in error messages.
-ARG FRESHRSS_BRANCH=edge
+ARG FRESHRSS_BRANCH=1.30.0
 
 WORKDIR /usr/src/freshrss
 

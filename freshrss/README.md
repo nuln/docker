@@ -10,7 +10,7 @@ review and to re-apply on a newer release.
 |---|---|
 | Image | `ghcr.io/nuln/freshrss:<version>` and `:latest` |
 | Base | Debian + Apache + mod_php + `mod_auth_openidc` (required for OIDC) |
-| Upstream | pinned by `ARG FRESHRSS_REF` in the Dockerfile |
+| Upstream | **1.30.0** (the latest release), pinned by commit in `ARG FRESHRSS_REF` |
 | Licence | AGPL-3.0, like FreshRSS — this image is a modified distribution and must keep offering the corresponding source (the patch lives in this repository) |
 
 ---
@@ -29,6 +29,29 @@ when that sub-directory is reachable through several domains:
 | 4 | `OIDCRedirectURI /i/oidc/` hardcoded | the OIDC callback is announced at the domain root → **404** under a sub-directory |
 | 5 | WebSub is driven by `base_url` | with a path-only value, `serverIsPublic('')` is false → **WebSub can never be enabled** |
 | 6 | `p/api/pshb.php` only answers `hub_mode=subscribe` / `hub_mode=unsubscribe` | a specification-compliant hub verifies with `hub.mode=verify` and gets `422` → **the subscription is never activated and no content is ever pushed** |
+
+### Upstream base and carried-over security fixes
+
+The image is built from the **1.30.0 release tag**, not from the development branch, so the
+published tag says `1.30.0` and the code is a released version.
+
+FreshRSS merged several security fixes *after* 1.30.0, three of which touch exactly the files this
+patch modifies. Dropping them silently would have made this image weaker than the multi-domain
+build it replaces, so two of them are carried inside the patch:
+
+| Upstream fix | Why it is here |
+|---|---|
+| `64f7f24` Improve WebSub security | re-enables the self-URL check in `p/api/pshb.php` that 1.30.0 ships commented out; this patch works on that same endpoint |
+| `6780afe` Reject token access for disabled accounts (CWE-613) | one line in `lib/Minz/Request.php`, which this patch also changes |
+
+One is **not** carried, deliberately:
+
+| Upstream fix | Why not |
+|---|---|
+| `5a270c0` Rotate session ID on all authenticated transitions (CWE-384) | it conflicts with this patch in `lib/Minz/Session.php`, and on the 1.30.0 base its callers catch a `RuntimeException` that the analysis proves is never thrown — `catch.neverThrown` in `app/Models/Auth.php` and `app/Controllers/userController.php`, which fails the project's own PHPStan level 10 gate. Shipping code that does not pass the upstream analyser is not acceptable, so this one waits for upstream's next release. |
+
+The remaining post-1.30.0 fixes (`d5ad610` CWE-294, `a625348` CWE-352, `cd42dc7` CWE-409) touch no
+file this patch modifies and are listed here only for completeness; they are **not** present either.
 
 `patches/0001-multi-domain-and-subdirectory.patch` fixes all six:
 
