@@ -113,9 +113,6 @@ body "${H1[@]}" "${U}${PREFIX}/i/?step=4" >/dev/null
 body "${H1[@]}" "${U}${PREFIX}/i/?step=5" >/dev/null
 
 [ -f "${DATA}/config.php" ] && ok "config.php written" || bad "config.php written" "<missing>" "file"
-# The per-user config is written by the wizard from the Apache workers; a bind-mounted data
-# directory on a Linux runner can lag a moment behind the HTTP response, so poll briefly instead of
-# asserting once. On failure the directory is listed, so the next run is diagnosable without guesswork.
 user_file="${DATA}/users/alice/config.php"
 for _ in $(seq 1 20); do
 	[ -f "$user_file" ] && break
@@ -124,7 +121,17 @@ done
 if [ -f "$user_file" ]; then
 	ok "user alice created"
 else
-	bad "user alice created" "$(ls -la "${DATA}/users" 2>&1 | tr '\n' ' ')" "file at ${user_file}"
+	# Three independent views, because a bind-mounted data directory behaves differently on a Linux
+	# runner than on Docker Desktop and a bare "<missing>" says nothing about why: the database (the
+	# authoritative one), the container's own filesystem, and the host's bind mount.
+	in_db=$(docker exec frss-fn php /var/www/FreshRSS/cli/list-users.php 2>/dev/null | tr '\n' ' ')
+	in_fs=$(docker exec frss-fn sh -c \
+		'find /var/www/FreshRSS/data/users -maxdepth 2 -printf "%M %u:%g %p\n" 2>&1' 2>/dev/null \
+		| tr '\n' ' | ' || true)
+	on_host=$(ls -la "${DATA}/users" 2>&1 | tr '\n' ' ')
+	bad "user alice created" \
+		"db=[${in_db}] container=[${in_fs}] host=[${on_host}]" \
+		"file at ${user_file}"
 fi
 is "base_url stored as a path (not a pinned domain)" \
 	"$(sed -n "s/^[[:space:]]*'base_url' => \\(.*\\),$/\\1/p" "${DATA}/config.php" | tr -d "'")" "$PREFIX"
