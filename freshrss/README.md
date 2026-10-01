@@ -191,23 +191,38 @@ docker pull ghcr.io/nuln/freshrss@sha256:a5f834f74b47f8a33eb949051e5145af7a81c4d
 
 ### 1. Deploy
 
+Two compose files ship here. Pick one.
+
+**`docker-compose.yml` — one command, nothing else to set up.** Single container, published on
+`127.0.0.1:8080`, installed and populated automatically:
+
 ```sh
-docker network create proxy      # the network of your reverse proxy
+echo "$GHCR_TOKEN" | docker login ghcr.io -u nuln --password-stdin   # the package is private
+docker compose up -d
+docker compose logs -f          # waits for "✅ FreshRSS user successfully created."
 ```
 
-```yaml
-services:
-  freshrss:
-    image: ghcr.io/nuln/freshrss:latest
-    restart: unless-stopped
-    environment:
-      FRESHRSS_PATH_PREFIX: /rss
-    volumes:
-      - ./data:/var/www/FreshRSS/data
-    networks: [proxy]
+Then open <http://127.0.0.1:8080/rss/> and log in with `alice` / `change-me-now`
+(`ADMIN_USER` / `ADMIN_PASSWORD` — **change them**, in `.env` or on the command line). The setup
+wizard does not appear: `FRESHRSS_INSTALL` and `FRESHRSS_USER` install the instance and create the
+administrator on first start, and both are no-ops on every later start. Nothing under `./data` ever
+has to be edited by hand.
+
+Copy `.env.example` to `.env` to change anything; every value has a working default.
+
+**`docker-compose.proxy.yml` — behind a reverse proxy.** No published port, joined to an external
+network, which is the usual production shape:
+
+```sh
+docker network create proxy
+docker compose -f docker-compose.proxy.yml up -d
 ```
 
-`docker-compose.yml` in this directory is a complete example.
+The reverse proxy itself is not part of these files — `Caddyfile.example` is a working one. What
+matters is that it must **not strip the prefix**; see the next section.
+
+Both files take the image from `${FRESHRSS_IMAGE:-ghcr.io/nuln/freshrss:1.30.0}`, so a test run can
+point them at a locally built image without editing the file.
 
 ### 2. Reverse proxy — the path MUST NOT be stripped
 
@@ -421,4 +436,6 @@ itself so the image can be rebuilt from the patch alone.
 | `test/fixtures/index.php` | RSS publisher that can advertise a hub and move its `rel="self"` |
 | `test/bcrypt-challenge.sh` | reproduces the browser login inside the container |
 | `Caddyfile.example` | recommended reverse-proxy configuration |
-| `docker-compose.yml` | complete deployment example |
+| `docker-compose.yml` | one-command deployment: `docker compose up -d`, published on localhost, auto-installed |
+| `docker-compose.proxy.yml` | the same behind a reverse proxy, on an external network, no published port |
+| `.env.example` | every variable the compose files read, with defaults |

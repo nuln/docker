@@ -6,15 +6,32 @@
 #
 # A 401/403 is healthy: it means Apache routed the request and PHP answered, i.e. the prefix,
 # the Alias and the entry point all line up. Only a 404 or a connection failure is unhealthy.
+#
+# The probe uses PHP rather than wget: the image ships the PHP curl extension but no wget binary, so
+# a wget-based probe could never succeed and every container reported `unhealthy`.
 set -eu
 
 PREFIX="${FRESHRSS_PATH_PREFIX:-}"
 # Keep the probe on the installation wizard/login page rather than a redirect target.
 URL="http://127.0.0.1${PREFIX}/i/?c=auth&a=login"
 
-# shellcheck disable=SC2086
-CODE="$(wget --spider --server-response --tries=1 --timeout=5 \
-	--header='Host: localhost' "$URL" 2>&1 | awk '/^  HTTP\//{c=$2} END{print c}')"
+CODE="$(php -r '
+	$url = $argv[1];
+	$ch = curl_init($url);
+	if ($ch === false) {
+		echo "000";
+		exit;
+	}
+	curl_setopt_array($ch, [
+		CURLOPT_RETURNTRANSFER => true,
+		CURLOPT_FOLLOWLOCATION => false,
+		CURLOPT_CONNECTTIMEOUT => 3,
+		CURLOPT_TIMEOUT => 5,
+		CURLOPT_HTTPHEADER => ["Host: localhost", "Connection: close"],
+	]);
+	curl_exec($ch);
+	echo (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+' "$URL" 2>/dev/null || echo 000)"
 
 case "${CODE:-000}" in
 	2*|3*|401|403) exit 0 ;;

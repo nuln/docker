@@ -70,6 +70,25 @@ if [ "$(id -u)" = "0" ] && [ -d "${FRESH_RSS_ROOT}/data" ]; then
 fi
 
 # --------------------------------------------------------------------------------------------
+# 1c. Make the refresh cron actually get installed.
+# --------------------------------------------------------------------------------------------
+# Upstream writes /etc/crontab.freshrss.default with the schedule already in place
+# (`7,37 * * * * . …`), and then replaces only the FIRST whitespace-delimited field with the whole
+# of $CRON_MIN (`s#^[^ ]+ #$CRON_MIN #`). The result carries ten fields instead of five, cron
+# rejects it with `bad command`, and no crontab is installed at all — so the documented feed refresh
+# never runs. The same holds when CRON_MIN is unset, because the whole block is then skipped.
+#
+# Two adjustments fix it without reimplementing the cron wiring:
+#   * collapse the template down to a single placeholder field, so upstream's substitution yields a
+#     valid five-field schedule;
+#   * default CRON_MIN to the schedule the image documents, so the block is never skipped.
+if [ -f /etc/crontab.freshrss.default ]; then
+	sed -r -i 's#^[^ ]+([ \t]+\*[ \t]+\*[ \t]+\*[ \t]+\*)?[ \t]*#CRON_PLACEHOLDER #' \
+		/etc/crontab.freshrss.default
+fi
+export CRON_MIN="${CRON_MIN:-7,37 * * * *}"
+
+# --------------------------------------------------------------------------------------------
 # 2. Serve the public prefix from the FreshRSS `p/` directory.
 # --------------------------------------------------------------------------------------------
 # The reverse proxy forwards the path unchanged and Apache aliases the prefix, so that:

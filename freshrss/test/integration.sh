@@ -224,6 +224,37 @@ curl -s -c "$JAR2" -b "$JAR2" --max-time 15 "http://127.0.0.1:${ENV2_PORT}${PREF
 written2=$(sed -n "s/^[[:space:]]*'base_url' => \\(.*\\),\$/\\1/p" "${DATA_DIR2}/config.php" 2>/dev/null | tr -d "'")
 is "FRESHRSS_BASE_URL overrides the wizard" "$written2" 'https://pinned.example/rss'
 rm -f "$JAR2"
+
+echo "== 5a2. the container reports itself healthy and actually refreshes"
+# Two defects that no earlier check could see, because the suites always probed with their own
+# curl and never looked at the container's own health or at cron. Both made the image report itself
+# broken while serving perfectly well.
+#
+# 1. The healthcheck used wget, which the image does not ship: every container was `unhealthy`.
+hc=$(docker exec frss-env2 /usr/local/bin/freshrss-healthcheck >/dev/null 2>&1 && echo 0 || echo 1)
+is "the shipped healthcheck reports healthy on a working instance" "$hc" "0"
+has "…and it does not depend on a wget binary" \
+	"$(docker exec frss-env2 sh -c 'command -v wget >/dev/null && echo present || echo absent')" "absent"
+
+# 2. Upstream's crontab template already carries the schedule, and its sed replaces only the first
+# field, so cron rejected the result and no refresh job was ever installed — with CRON_MIN set *and*
+# unset. A container with no refresh job still looks perfectly healthy, which is why this went
+# unnoticed.
+cron_line=$(docker exec frss-env2 crontab -l 2>/dev/null | grep -v '^#' | grep -v '^$' | head -1 || true)
+if [ -z "$cron_line" ]; then
+	bad "the feed refresh cron is installed" "no crontab" "a crontab entry"
+else
+	ok "the feed refresh cron is installed"
+	# cron needs exactly five schedule fields before the command. Counting *all* whitespace-separated
+	# words would count the command too, so the first five are compared as a schedule.
+	is "…with exactly the requested five-field schedule" \
+		"$(printf '%s' "$cron_line" | awk '{print $1" "$2" "$3" "$4" "$5}')" "7,37 * * * *"
+	has "…followed by the command, not more schedule fields" "$cron_line" "* . /var/www/FreshRSS/Docker/env.txt"
+	has "…running the FreshRSS refresh script" "$cron_line" "actualize_script.php"
+fi
+has "the cron template survives the substitution" \
+	"$(docker exec frss-env2 sh -c 'cat /etc/crontab.freshrss.default')" "actualize_script.php"
+docker rm -f frss-env2 >/dev/null 2>&1
 docker rm -f frss-env2 >/dev/null 2>&1
 rm -rf "$DATA_DIR2" 2>/dev/null || true
 
