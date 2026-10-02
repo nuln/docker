@@ -88,6 +88,22 @@ if [ -f /etc/crontab.freshrss.default ]; then
 fi
 export CRON_MIN="${CRON_MIN:-7,37 * * * *}"
 
+# CRON_MIN replaces the WHOLE schedule, so a value that reads like a minute field — `*/30`, which is
+# exactly what the name suggests — is substituted in place of the minute field and leaves the rest
+# of the template to be parsed as the hour field. cron then either fails outright (`bad hour`) or,
+# on a more tolerant build, installs a line whose command is `.`, i.e. it sources env.txt every half
+# hour instead of refreshing feeds. Fewer than five fields can only be an incomplete schedule, so
+# complete it. `@`-prefixed shorthands (@daily …) are already whole schedules and are left alone.
+case "$CRON_MIN" in
+	@*) ;;
+	*)
+		if [ "$(printf '%s' "$CRON_MIN" | awk '{print NF}')" -lt 5 ]; then
+			export CRON_MIN="$CRON_MIN * * * *"
+			echo "FreshRSS: CRON_MIN has fewer than five fields, using '$CRON_MIN' as the complete schedule"
+		fi
+		;;
+esac
+
 # --------------------------------------------------------------------------------------------
 # 2. Serve the public prefix from the FreshRSS `p/` directory.
 # --------------------------------------------------------------------------------------------

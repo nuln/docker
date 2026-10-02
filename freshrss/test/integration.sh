@@ -31,6 +31,7 @@ OIDC2_PORT=18107
 MAIL_PORT=18113
 FLAG_PORT=18111
 ALLOW_PORT=18114
+CRON_PORT=18115
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 pass=0
@@ -255,8 +256,37 @@ fi
 has "the cron template survives the substitution" \
 	"$(docker exec frss-env2 sh -c 'cat /etc/crontab.freshrss.default')" "actualize_script.php"
 docker rm -f frss-env2 >/dev/null 2>&1
-docker rm -f frss-env2 >/dev/null 2>&1
 rm -rf "$DATA_DIR2" 2>/dev/null || true
+
+echo
+echo "== 5a3. CRON_MIN given as a bare minute field"
+# The variable name suggests "cron minutes", so `*/30` is the obvious thing to write — but it
+# replaces the whole schedule, not the minute field. Unpadded it yields `*/30 . /var/www/…`, which
+# cron rejects with `bad hour`, or (on a tolerant build) installs with `.` as the command.
+docker rm -f frss-cron >/dev/null 2>&1
+CRON_DATA_DIR="$(mktemp -d)"
+docker run -d --name frss-cron -p "${CRON_PORT}:80" \
+	-e "FRESHRSS_PATH_PREFIX=${PREFIX}" -e 'CRON_MIN=*/30' \
+	-v "${CRON_DATA_DIR}:/var/www/FreshRSS/data" "$IMAGE" >/dev/null
+wait_http "http://127.0.0.1:${CRON_PORT}${PREFIX}/i/?c=auth&a=login" || true
+sleep 2
+cron_line=$(docker exec frss-cron crontab -l 2>/dev/null | grep -v '^#' | grep -v '^$' | head -1 || true)
+if [ -z "$cron_line" ]; then
+	bad "a bare minute field still yields a schedule" "no crontab" "a crontab entry"
+else
+	ok "a bare minute field still yields a schedule"
+	is "…completed to five fields, in the minute position" \
+		"$(printf '%s' "$cron_line" | awk '{print $1" "$2" "$3" "$4" "$5}')" "*/30 * * * *"
+	# The command legitimately begins with `.` (the template sources env.txt before dropping to
+	# www-data), so the thing worth checking is that env.txt is actually there to be sourced —
+	# otherwise every run would fail at the first command.
+	is "…and the file the job sources before refreshing exists" \
+		"$(docker exec frss-cron sh -c '[ -r /var/www/FreshRSS/Docker/env.txt ] && echo readable || echo missing')" \
+		"readable"
+	has "…still running the refresh script" "$cron_line" "actualize_script.php"
+fi
+docker rm -f frss-cron >/dev/null 2>&1
+rm -rf "$CRON_DATA_DIR" 2>/dev/null || true
 
 echo
 echo "== 5a. X-Forwarded-Prefix: a proxy that strips the prefix"

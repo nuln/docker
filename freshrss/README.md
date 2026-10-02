@@ -370,7 +370,7 @@ and a user moving from one domain to the other is silently signed in by the IdP.
 | `FRESHRSS_WEBSUB_BASE_URL` | *(empty)* | address advertised to WebSub hubs; wins over `websub_base_url` |
 | `TRUSTED_PROXY` | *(empty)* | CIDR of the reverse proxy, so the real client IP is logged |
 | `OIDC_ENABLED` | *(empty)* | any non-zero value activates OIDC |
-| `CRON_MIN` | *(empty)* | feed refresh schedule, e.g. `7,37 * * * *` |
+| `CRON_MIN` | `7,37 * * * *` | feed refresh schedule — a **whole** crontab expression, not just the minutes: every 30 minutes is `*/30 * * * *`. A shorter value is completed with `* * * *`. |
 | `DATA_PATH` | *(empty)* | alternate data directory |
 
 Everything else (`OIDC_*`, `FRESHRSS_INSTALL`, `FRESHRSS_USER`, `ENABLE_ACCESS_LOG`, `LISTEN`,

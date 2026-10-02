@@ -51,7 +51,9 @@ services:
         --title ${FRESH_TITLE:-FreshRSS}
       FRESHRSS_USER: --user ${ADMIN_USER:-alice} --password ${ADMIN_PASSWORD:-change-me-now}
 
-      # Feed refresh cron, in the container's timezone. Default is the image's "7,37 * * * *".
+      # Feed refresh cron, in the container's timezone. This is a WHOLE crontab expression, not just
+      # the minutes, despite the name: every 30 minutes is "*/30 * * * *". A shorter value is
+      # completed with "* * * *" by the entrypoint, so "*/30" also works.
       CRON_MIN: ${CRON_MIN:-7,37 * * * *}
 
       # --- OIDC (optional, all-or-nothing) --------------------------------------------
