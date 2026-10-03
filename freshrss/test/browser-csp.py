@@ -23,8 +23,14 @@ policy is asserted to produce no violation at all.
 
 import sys
 
-from playwright.sync_api import Error as PlaywrightError
-from playwright.sync_api import sync_playwright
+try:
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import sync_playwright
+except ModuleNotFoundError:
+    # Called from test/integration.sh, which a developer may well run without Playwright installed.
+    # Skipping is the right answer here; CI installs it up front, so this never applies there.
+    print("== csp: skipped (python playwright is not installed)")
+    sys.exit(0)
 
 OK = "\033[32mok\033[0m"
 BAD = "\033[31mFAIL\033[0m"
