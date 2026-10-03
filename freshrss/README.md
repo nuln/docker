@@ -426,7 +426,12 @@ itself so the image can be rebuilt from the patch alone.
 - The first request or two after a cold start may return 500 while `data/` is being prepared;
   it settles within a couple of seconds. The `HEALTHCHECK` probe retries.
 - Changing `FRESHRSS_PATH_PREFIX` on an existing install invalidates session cookies (path
-  change) and requires re-registering the OIDC redirect URIs.
+  change) and requires re-registering the OIDC redirect URIs. **Clear the browser's cookies as
+  well**: cookie identity is (name, domain, path), so the cookie from the previous configuration
+  keeps being sent alongside the new one — broader path first, and PHP keeps the last entry for a
+  repeated name. The stale one then shadows the valid one and every login silently fails. The
+  symptom is a login form that accepts the correct credentials and returns to itself, with no error
+  anywhere; deleting the cookies in the browser resolves it immediately.
 - Upstream's built-in update mechanism is disabled (`disable_update`): update the image instead.
 
 ### When the login button does nothing
