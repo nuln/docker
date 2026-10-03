@@ -1,0 +1,94 @@
+# Two-hop deployment: browser → edge Caddy → inner Caddy → FreshRSS.
+#
+# Only needed when something in front of Caddy already terminates the client's connection — a
+# load balancer, a service mesh, another proxy tier. If Caddy is the first hop, use the plain
+# docker-compose.proxy.yml instead: one hop is simpler and has no header-forwarding subtleties.
+#
+# Caddyfile.outer.example  → edge, holds the public certificate
+# Caddyfile.inner.example  → relays the forwarding headers, must NOT be reachable from outside
+#
+#   docker network create proxy    # once
+#   docker compose -f docker-compose.two-hop.yml up -d
+
+name: freshrss-two-hop
+
+services:
+  freshrss:
+    image: ${FRESHRSS_IMAGE:-ghcr.io/nuln/freshrss:1.30.0}
+    container_name: freshrss
+    restart: unless-stopped
+
+    environment:
+      TZ: ${TZ:-Etc/UTC}
+
+      # Must match the prefix in both Caddyfiles.
+      FRESHRSS_PATH_PREFIX: ${FRESHRSS_PATH_PREFIX:-/rss}
+
+      # Unattended installation, as in docker-compose.proxy.yml.
+      FRESHRSS_INSTALL: >-
+        --default-user ${ADMIN_USER:-alice}
+        --db-type sqlite
+        --auth-type form
+        --title ${FRESH_TITLE:-FreshRSS}
+      FRESHRSS_USER: --user ${ADMIN_USER:-alice} --password ${ADMIN_PASSWORD:-change-me-now}
+
+      # A whole crontab expression, not just the minutes: every 30 minutes is `*/30 * * * *`.
+      CRON_MIN: ${CRON_MIN:-7,37 * * * *}
+
+      # Third-party scripts injected at the edge, e.g. Cloudflare Browser Insights. Empty keeps
+      # FreshRSS's own strict policy. See Caddyfile.example.
+      FRESHRSS_CSP_SCRIPT_SRC: ${FRESHRSS_CSP_SCRIPT_SRC:-}
+      FRESHRSS_CSP_WARNING: ${FRESHRSS_CSP_WARNING:-0}
+
+    volumes:
+      - ./data:/var/www/FreshRSS/data
+
+    healthcheck:
+      test: ['CMD', '/usr/local/bin/freshrss-healthcheck']
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+    networks:
+      - proxy
+
+  # The hop the browser reaches. Publishes 80/443 and holds the certificate.
+  caddy-outer:
+    image: caddy:2-alpine
+    container_name: caddy-outer
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - caddy-inner
+      - freshrss
+    networks:
+      - proxy
+
+  # Deliberately has no `ports:`. It trusts the forwarding headers that reach it, so it must not be
+  # reachable from the host or the internet — only from caddy-outer on this network.
+  caddy-inner:
+    image: caddy:2-alpine
+    container_name: caddy-inner
+    restart: unless-stopped
+    volumes:
+      - ./Caddyfile.inner:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - freshrss
+    networks:
+      - proxy
+
+volumes:
+  caddy-data:
+  caddy-config:
+
+networks:
+  proxy:
+    external: true

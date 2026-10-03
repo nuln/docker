@@ -224,6 +224,39 @@ matters is that it must **not strip the prefix**; see the next section.
 Both files take the image from `${FRESHRSS_IMAGE:-ghcr.io/nuln/freshrss:1.30.0}`, so a test run can
 point them at a locally built image without editing the file.
 
+### 2b. Two hops: a proxy in front of Caddy
+
+If something already terminates the client's connection before Caddy — another proxy tier, a load
+balancer, a service mesh — you need two hops, and the inner Caddy must **relay** the forwarding
+headers instead of recomputing them. Recomputing them is the usual way to break this: the hop is
+plain HTTP internally, so FreshRSS would see `http` and generate downgraded absolute URLs, lose
+`Secure` on the session cookie, and point links at a container name.
+
+`Caddyfile.outer.example`, `Caddyfile.inner.example` and `docker-compose.two-hop.yml` are that
+setup, ready to copy:
+
+```sh
+docker network create proxy
+cp Caddyfile.outer.example Caddyfile
+cp Caddyfile.inner.example Caddyfile.inner
+docker compose -f docker-compose.two-hop.yml up -d
+```
+
+Two rules that the examples encode, both learned the hard way:
+
+- **The inner Caddy must have no `ports:`.** It trusts the `X-Forwarded-*` headers it receives, which
+  disables Caddy's built-in protection against a forged Host. That is only safe while the port is
+  unreachable from anywhere but this network.
+- **Use `handle` for the FreshRSS route, not a bare `reverse_proxy /rss/*`.** Caddy's built-in
+  directive order evaluates `redir` and `respond` *before* `handle` and `reverse_proxy`, so an
+  unqualified `redir` (a catch-all redirect to the main site) or a bare `respond 404` answers every
+  request and the sub-directory is never proxied. `handle` blocks are mutually exclusive and ordered
+  by path specificity, which is why they are immune to this. The catch-all redirect additionally
+  carries a `@catchall not path /rss …` matcher, so it cannot swallow `/rss` at all.
+
+If nothing sits in front of Caddy, do not use two hops: point `Caddyfile.example` at `freshrss:80`
+directly. One hop has none of these subtleties.
+
 ### 2. Reverse proxy — the path MUST NOT be stripped
 
 This is the one thing to get right. `mod_auth_openidc` compares `OIDCRedirectURI` against the
@@ -514,7 +547,7 @@ that opens six connections, which is why the test proxy in `test/strip-proxy.php
 | `FreshRSS.Apache.conf` | upstream conf + env-driven `OIDCRedirectURI` + `IncludeOptional` for the prefix |
 | `entrypoint.sh` | normalises the prefix, exports the OIDC paths, generates the `Alias`, hands over to the upstream entrypoint |
 | `healthcheck.sh` | probes `<prefix>/i/`, fails loudly on a broken sub-directory mapping |
-| `test/integration.sh` | 230-check end-to-end test (sub-directory, domains, OIDC login, WebSub, strip mode, email validation, allowed_hosts) |
+| `test/integration.sh` | 231-check end-to-end test (sub-directory, domains, OIDC login, WebSub, strip mode, email validation, allowed_hosts) |
 | `test/functional.sh` | 68-check end-to-end test of the product itself (install → login → subscribe → read → API) |
 | `test/browser-login.py` | logs in with a real Chromium: the crypto chain, the POST, the cookie, the reader view |
 | `test/browser-csp.py` | checks the served CSP in a browser: no executable inline script, and a third-party origin allowed or refused as configured |
@@ -525,6 +558,8 @@ that opens six connections, which is why the test proxy in `test/strip-proxy.php
 | `test/fixtures/index.php` | RSS publisher that can advertise a hub and move its `rel="self"` |
 | `test/bcrypt-challenge.sh` | reproduces the browser login inside the container |
 | `Caddyfile.example` | recommended reverse-proxy configuration |
+| `Caddyfile.outer.example` / `Caddyfile.inner.example` | the two-hop variant, when a proxy in front of Caddy already terminates the connection |
+| `docker-compose.two-hop.yml` | edge Caddy + inner Caddy + FreshRSS, wired on one network; the inner Caddy deliberately publishes no port |
 | `docker-compose.yml` | one-command deployment: `docker compose up -d`, published on localhost, auto-installed |
 | `docker-compose.proxy.yml` | the same behind a reverse proxy, on an external network, no published port |
 | `.env.example` | every variable the compose files read, with defaults |

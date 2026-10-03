@@ -1,0 +1,41 @@
+# Inner Caddy — the hop between the edge proxy and FreshRSS.
+#
+# Used when something in front of Caddy already terminates the client's connection: a second
+# Caddy, a load balancer, a service mesh. In that case the hop in front of FreshRSS is plain HTTP
+# on an internal network, so this Caddy must NOT recompute the forwarding headers — it has no idea
+# what the client used. Recomputing them is the single most common way to break a sub-directory
+# deployment in a two-hop setup:
+#
+#   * X-Forwarded-Proto becomes http, so every absolute URL FreshRSS generates is downgraded and the
+#     session cookie loses `Secure`;
+#   * X-Forwarded-Host becomes the container's name, so links point at an address no browser can
+#     resolve;
+#   * X-Forwarded-Port becomes 80, and `Minz_Request::extractPortForUrl()` only drops a port when it
+#     is the default for the scheme, so https://example.com:80/rss gets generated.
+#
+# So the three `header_up` lines below relay what the hop in front sent, unchanged.
+#
+# SECURITY: this file trusts those headers unconditionally, which removes Caddy's built-in
+# protection against a forged Host. That is only acceptable while the port is unreachable from
+# anywhere but this network — so do NOT publish it. `docker-compose.two-hop.yml` deliberately
+# gives this service no `ports:` at all.
+#
+# `handle` rather than a bare `reverse_proxy /rss/*`: `handle` blocks are mutually exclusive and
+# ordered by path specificity, so this route cannot be stolen by the `redir` or `respond` below.
+# Caddy's built-in directive order puts `redir` and `respond` *before* `handle`, so a bare
+# `respond 404` would answer every request instead of proxying.
+
+:80 {
+	handle /rss/* {
+		reverse_proxy freshrss:80 {
+			header_up X-Forwarded-Host {http.request.header.X-Forwarded-Host}
+			header_up X-Forwarded-Proto {http.request.header.X-Forwarded-Proto}
+			header_up X-Forwarded-Port {http.request.header.X-Forwarded-Port}
+		}
+	}
+
+	# A bare `/rss` has to reach `/rss/`, which is the FreshRSS entry point.
+	redir /rss /rss/ 308
+
+	respond 404
+}
