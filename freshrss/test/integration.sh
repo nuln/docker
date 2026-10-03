@@ -34,6 +34,7 @@ ALLOW_PORT=18114
 CRON_PORT=18115
 CADDY_PORT=18116
 CADDY_BACKEND_PORT=18117
+MIS_PORT=18118
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 pass=0
@@ -374,7 +375,60 @@ else
 fi
 rm -rf "$CADDY_TMP" "$CADDY_DATA" 2>/dev/null || true
 docker rm -f frss-caddy frss-caddy-test >/dev/null 2>&1
+echo
+echo "== 5a5. a prefix that disagrees with the stored base_url is reported at startup"
+# Nothing else checks this pair. The Apache Alias and the session cookie path follow
+# FRESHRSS_PATH_PREFIX, while every generated link follows `base_url` in data/config.php. When they
+# disagree the container starts happily and serves 200s, and the first login moves the browser out
+# of the sub-directory — the cookie is scoped to /rss/ but the redirect lands on /i/, so the session
+# never returns and the login page repeats. It has to be caught at startup instead.
+docker rm -f frss-mismatch >/dev/null 2>&1
+MIS_DATA="$(mktemp -d)"
+docker run -d --name frss-mismatch -p "${MIS_PORT}:80" \
+	-e "FRESHRSS_PATH_PREFIX=${PREFIX}" \
+	-v "${MIS_DATA}:/var/www/FreshRSS/data" "$IMAGE" >/dev/null
+wait_http "http://127.0.0.1:${MIS_PORT}${PREFIX}/i/?c=auth&a=login" || true
+sleep 2
+docker exec frss-mismatch php /var/www/FreshRSS/cli/do-install.php \
+	--default-user alice --db-type sqlite --db-base /var/www/FreshRSS/data/db.sqlite \
+	--auth-type form >/dev/null 2>&1 || true
+docker exec frss-mismatch sh -c 'chown -R :www-data /var/www/FreshRSS/data; chmod -R g+rwX /var/www/FreshRSS/data'
 
+# The install writes a matching base_url, so there is nothing to report yet.
+docker restart frss-mismatch >/dev/null; sleep 5
+is "a matching base_url is not reported" \
+	"$(docker logs --since 10s frss-mismatch 2>&1 | grep -c 'base_url' || true)" "0"
+
+# Now the state a hand-edited or inherited volume ends up in.
+docker exec frss-mismatch sed -i "s#'base_url' => '${PREFIX}'#'base_url' => ''#" \
+	/var/www/FreshRSS/data/config.php
+docker restart frss-mismatch >/dev/null; sleep 5
+warn=$(docker logs --since 10s frss-mismatch 2>&1 || true)
+has "an empty base_url under a configured prefix is reported" "$warn" 'FRESHRSS_PATH_PREFIX'
+has "…and the report says how to fix it" "$warn" 'reconfigure.php --base-url'
+has "…naming the prefix the cookie is scoped to" "$warn" "${PREFIX}/"
+
+# …and the mirror image: a pinned base_url with no prefix to serve it.
+docker exec frss-mismatch sed -i "s#'base_url' => ''#'base_url' => '${PREFIX}'#" \
+	/var/www/FreshRSS/data/config.php
+docker rm -f frss-mismatch >/dev/null 2>&1
+D2="$(mktemp -d)"
+docker run -d --name frss-mismatch -p "${MIS_PORT}:80" -e 'FRESHRSS_PATH_PREFIX=' \
+	-v "${D2}:/var/www/FreshRSS/data" "$IMAGE" >/dev/null
+wait_http "http://127.0.0.1:${MIS_PORT}/i/?c=auth&a=login" || true
+sleep 2
+docker exec frss-mismatch php /var/www/FreshRSS/cli/do-install.php \
+	--default-user alice --db-type sqlite --db-base /var/www/FreshRSS/data/db.sqlite \
+	--auth-type form --base-url "$PREFIX" >/dev/null 2>&1 || true
+docker exec frss-mismatch sh -c 'chown -R :www-data /var/www/FreshRSS/data; chmod -R g+rwX /var/www/FreshRSS/data'
+docker restart frss-mismatch >/dev/null; sleep 5
+warn2=$(docker logs --since 10s frss-mismatch 2>&1 || true)
+has "a pinned base_url with no prefix is reported too" "$warn2" 'Set FRESHRSS_PATH_PREFIX'
+
+docker rm -f frss-mismatch >/dev/null 2>&1
+rm -rf "$MIS_DATA" "$D2" 2>/dev/null || true
+
+echo
 echo
 echo
 echo "== 5a. X-Forwarded-Prefix: a proxy that strips the prefix"

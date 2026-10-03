@@ -145,6 +145,40 @@ if ! apache2 -t >/dev/null 2>&1; then
 fi
 
 # --------------------------------------------------------------------------------------------
+# 2b. Refuse to stay silent when the public prefix and the stored base_url disagree.
+# --------------------------------------------------------------------------------------------
+# These two have to describe the same address, and nothing else checks it:
+#   * the Apache Alias and the session cookie path follow FRESHRSS_PATH_PREFIX;
+#   * every generated link and every redirect target follows `base_url` in data/config.php.
+# When they disagree the instance starts, serves 200s, and the browser is quietly moved out of
+# the sub-directory on the first login — the cookie is scoped to /rss/ but the redirect lands on
+# /i/, so the session never comes back and the login page repeats forever.
+if [ -f "${FRESH_RSS_ROOT}/data/config.php" ]; then
+	# Read the stored value rather than sourcing the file: config.php is PHP, not shell.
+	stored_base=$(sed -n "s/^[[:space:]]*'base_url'[[:space:]]*=>[[:space:]]*'\(.*\)',[[:space:]]*$/\1/p" \
+		"${FRESH_RSS_ROOT}/data/config.php" | head -1)
+	stored_base="${stored_base%/}"
+	# An unset base_url means "follow the request host", which is the documented way to serve
+	# several domains from one instance; an empty one is therefore not a value to compare.
+	if [ -n "${FRESHRSS_PATH_PREFIX}" ] && [ -z "${stored_base}" ]; then
+		echo "FreshRSS: WARNING — FRESHRSS_PATH_PREFIX is '${FRESHRSS_PATH_PREFIX}' but" >&2
+		echo "          data/config.php has an empty base_url. Links will be built without the" >&2
+		echo "          prefix while the session cookie is scoped to '${FRESHRSS_PATH_PREFIX}/'," >&2
+		echo "          so a login will bounce back to the login form." >&2
+		echo "          Fix with: docker exec freshrss php cli/reconfigure.php --base-url '${FRESHRSS_PATH_PREFIX}'" >&2
+		echo "          — or serve the instance at the domain root by unsetting FRESHRSS_PATH_PREFIX." >&2
+	elif [ -z "${FRESHRSS_PATH_PREFIX}" ] && [ -n "${stored_base}" ]; then
+		echo "FreshRSS: WARNING — data/config.php pins base_url to '${stored_base}' but" >&2
+		echo "          FRESHRSS_PATH_PREFIX is unset, so the container serves no such sub-directory." >&2
+		echo "          Set FRESHRSS_PATH_PREFIX='${stored_base}' on the container." >&2
+	elif [ -n "${FRESHRSS_PATH_PREFIX}" ] && [ -n "${stored_base}" ] \
+		&& [ "${stored_base}" != "${FRESHRSS_PATH_PREFIX}" ]; then
+		echo "FreshRSS: WARNING — FRESHRSS_PATH_PREFIX ('${FRESHRSS_PATH_PREFIX}') and the stored" >&2
+		echo "          base_url ('${stored_base}') disagree; links and cookies will not match." >&2
+	fi
+fi
+
+# --------------------------------------------------------------------------------------------
 # 3. Hand over to the upstream entrypoint.
 # --------------------------------------------------------------------------------------------
 cd "${FRESH_RSS_ROOT}"
