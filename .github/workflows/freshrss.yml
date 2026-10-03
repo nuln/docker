@@ -212,3 +212,16 @@ jobs:
       # second domain. It needs the mock OIDC provider port free, so it runs after integration.
       - name: Functional test (install → login → subscribe → read → API → 2nd domain)
         run: ./freshrss/test/functional.sh ${{ matrix.image }}
+
+      # Everything above logs in with curl, which POSTs the crypto form directly and so never runs
+      # the JavaScript the login page depends on: the submit button ships disabled and only
+      # p/scripts/extra.js enables it, after deriving a bcrypt challenge. A browser is the only way
+      # to observe that chain, and the failure it produces — a 200 with a login form and no POST —
+      # is invisible to a request-level test.
+      - name: Install Playwright
+        run: |
+          python3 -m pip install --quiet --upgrade playwright
+          python3 -m playwright install --with-deps chromium
+
+      - name: Browser test (a real Chromium performs the login)
+        run: ./freshrss/test/browser.sh ${{ matrix.image }}
