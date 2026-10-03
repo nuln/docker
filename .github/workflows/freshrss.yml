@@ -204,6 +204,13 @@ jobs:
           docker pull ${{ matrix.image }}
           docker image inspect ${{ matrix.image }} --format '{{.Os}}/{{.Architecture}}'
 
+      # Sections 5a4 and 5a6 of the integration suite drive a real browser, so Playwright has to be
+      # in place before it starts rather than only before the browser suite.
+      - name: Install Playwright
+        run: |
+          python3 -m pip install --quiet --upgrade playwright
+          python3 -m playwright install --with-deps chromium
+
       - name: Integration test (sub-directory, several domains, OIDC login, WebSub, strip mode)
         run: ./freshrss/test/integration.sh ${{ matrix.image }}
 
@@ -218,10 +225,5 @@ jobs:
       # p/scripts/extra.js enables it, after deriving a bcrypt challenge. A browser is the only way
       # to observe that chain, and the failure it produces — a 200 with a login form and no POST —
       # is invisible to a request-level test.
-      - name: Install Playwright
-        run: |
-          python3 -m pip install --quiet --upgrade playwright
-          python3 -m playwright install --with-deps chromium
-
       - name: Browser test (a real Chromium performs the login)
         run: ./freshrss/test/browser.sh ${{ matrix.image }}
