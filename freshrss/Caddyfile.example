@@ -23,6 +23,26 @@
 			header_up X-Forwarded-Host {host}
 			header_up X-Forwarded-Proto {scheme}
 			header_up X-Forwarded-Port {server_port}
+
+			# --- keeping Cloudflare Browser Insights (optional) --------------------------
+			# FreshRSS sends `Content-Security-Policy: default-src 'self'`, hard-coded in
+			# lib/Minz/ActionController.php with no configuration key for `default-src`. That
+			# policy blocks the `static.cloudflareinsights.com/beacon.min.js` that Cloudflare
+			# injects at the edge, so Browser Insights never collects anything and the console
+			# fills with violations. Uncomment the next line to allow it.
+			#
+			# It REPLACES the header rather than adding to it, and that is required: several CSP
+			# headers are enforced as their intersection, i.e. the most restrictive of them, so
+			# appending a permissive `script-src` alongside the original policy would relax
+			# nothing at all. `script-src` takes precedence over `default-src` for scripts only,
+			# so every other directive still falls back to `default-src 'self'` and the policy
+			# keeps doing its job.
+			#
+			# Sources must name a scheme and, when it is not the default for that scheme, the
+			# port: CSP matches host *and* port exactly, so `https://static.cloudflareinsights.com`
+			# permits that origin on 443 and nothing else. The beacon reports to /cdn-cgi/rum on
+			# the same origin, which `default-src 'self'` already covers.
+			# header_down Content-Security-Policy "default-src 'self'; script-src 'self' https://static.cloudflareinsights.com; frame-ancestors 'none'"
 		}
 	}
 

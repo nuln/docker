@@ -35,6 +35,8 @@ CRON_PORT=18115
 CADDY_PORT=18116
 CADDY_BACKEND_PORT=18117
 MIS_PORT=18118
+CSP_PORT=18304
+CSP_CADDY_PORT=18305
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 pass=0
@@ -427,7 +429,77 @@ has "a pinned base_url with no prefix is reported too" "$warn2" 'Set FRESHRSS_PA
 
 docker rm -f frss-mismatch >/dev/null 2>&1
 rm -rf "$MIS_DATA" "$D2" 2>/dev/null || true
+echo
+echo "== 5a6. the CSP policy: no inline script, and a third-party origin can be allowed"
+# Two separate things are checked here, both of which cost real debugging time.
+#
+# 1. The login page must contain no *executable* inline script. FreshRSS sends
+#    `default-src 'self'`, which forbids inline script outright, so one is silently dead and the
+#    browser reports a violation nobody can act on — the hash it prints identifies only the
+#    content, not the source. An earlier revision of this patch shipped such a script and nobody
+#    noticed until a deployment reported it.
+#
+# 2. Allowing a third-party origin (Cloudflare Browser Insights, injected at the edge) has to
+#    replace the header rather than add to it: several CSP headers are enforced as their
+#    intersection, so appending a permissive `script-src` relaxes nothing. And a source must name
+#    an explicit port, because CSP matches host *and* port exactly.
+#
+# `localhost` and `127.0.0.1` are genuinely different origins to a browser and both resolve, which
+# makes a real cross-origin test possible without reaching a third party over the network.
+docker rm -f frss-csp frss-csp-caddy >/dev/null 2>&1
+CSP_DATA="$(mktemp -d)"
+docker run -d --name frss-csp --network "$NET" --network-alias freshrss -p "${CSP_PORT}:80" \
+	-e "FRESHRSS_PATH_PREFIX=${PREFIX}" \
+	-v "${CSP_DATA}:/var/www/FreshRSS/data" "$IMAGE" >/dev/null
+wait_http "http://127.0.0.1:${CSP_PORT}${PREFIX}/i/?c=auth&a=login" || true
+sleep 2
+docker exec frss-csp php /var/www/FreshRSS/cli/do-install.php \
+	--default-user alice --db-type sqlite --db-base /var/www/FreshRSS/data/db.sqlite \
+	--auth-type form >/dev/null 2>&1 || true
+docker exec frss-csp php /var/www/FreshRSS/cli/create-user.php \
+	--user alice --password dummy-password >/dev/null 2>&1 || true
+docker exec frss-csp sh -c 'chown -R :www-data /var/www/FreshRSS/data; chmod -R g+rwX /var/www/FreshRSS/data'
 
+# The unmodified policy must leave the browser with nothing to complain about.
+csp_out="$(python3 "${SCRIPT_DIR}/browser-csp.py" "http://127.0.0.1:${CSP_PORT}" "$PREFIX" "${CSP_PORT}" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true)"
+printf '%s' "$csp_out" | sed 's/^/    /'
+
+# And with the origin allowed, exactly as Caddyfile.example documents it.
+CSP_DIR="$(mktemp -d)"
+echo 'window.__allowed = true;' > "${CSP_DIR}/probe.js"
+cat > "${CSP_DIR}/Caddyfile" <<CADDY
+http://127.0.0.1 {
+	handle ${PREFIX}/* {
+		reverse_proxy freshrss:80 {
+			header_down Content-Security-Policy "default-src 'self'; script-src 'self' http://localhost:${CSP_CADDY_PORT}; frame-ancestors 'none'"
+		}
+	}
+}
+http://localhost {
+	root * /srv
+	header Content-Type application/javascript
+	file_server
+}
+CADDY
+docker run -d --name frss-csp-caddy --network "$NET" -p "${CSP_CADDY_PORT}:80" \
+	-v "${CSP_DIR}/Caddyfile:/etc/caddy/Caddyfile:ro" -v "${CSP_DIR}:/srv:ro" \
+	caddy:2-alpine >/dev/null
+sleep 5
+csp_out2="$(python3 "${SCRIPT_DIR}/browser-csp.py" "http://127.0.0.1:${CSP_CADDY_PORT}" "$PREFIX" "${CSP_CADDY_PORT}" --allowed 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true)"
+printf '%s' "$csp_out2" | sed 's/^/    /'
+
+# Fold both runs into this suite's counters.
+for line in "$csp_out" "$csp_out2"; do
+	n="$(printf '%s' "$line" | grep -oE '[0-9]+ passed, [0-9]+ failed' | tail -1)"
+	[ -n "$n" ] || continue
+	pass=$((pass + $(printf '%s' "$n" | grep -oE '^[0-9]+')))
+	fail=$((fail + $(printf '%s' "$n" | grep -oE '[0-9]+ failed' | grep -oE '^[0-9]+')))
+done
+
+docker rm -f frss-csp frss-csp-caddy >/dev/null 2>&1
+rm -rf "$CSP_DIR" "$CSP_DATA" 2>/dev/null || true
+
+echo
 echo
 echo
 echo

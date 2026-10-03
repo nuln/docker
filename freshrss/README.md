@@ -434,6 +434,35 @@ itself so the image can be rebuilt from the patch alone.
   anywhere; deleting the cookies in the browser resolves it immediately.
 - Upstream's built-in update mechanism is disabled (`disable_update`): update the image instead.
 
+### Content-Security-Policy and Cloudflare Browser Insights
+
+FreshRSS sends `Content-Security-Policy: default-src 'self'; frame-ancestors 'none'`, hard-coded in
+`lib/Minz/ActionController.php`. Only `frame-ancestors` has a configuration key (`csp.frame-ancestors`,
+editable in the admin UI); `default-src` has none, and extensions can only amend it in PHP.
+
+That policy is deliberately strict and it does its job — it also blocks the
+`static.cloudflareinsights.com/beacon.min.js` that Cloudflare injects at the edge, so Browser
+Insights collects nothing and the console fills with violations. To keep the feature, allow its
+origin at the proxy; see the commented block in `Caddyfile.example`:
+
+```caddyfile
+header_down Content-Security-Policy "default-src 'self'; script-src 'self' https://static.cloudflareinsights.com; frame-ancestors 'none'"
+```
+
+Three things that are easy to get wrong, all verified in section 5a6 of the suite:
+
+- It must **replace** the header, not add to it. Several CSP headers are enforced as their
+  **intersection** — the most restrictive of them — so appending a permissive `script-src`
+  alongside the original relaxes nothing. Caddy's `+Content-Security-Policy` form does exactly
+  that and therefore does not work.
+- `script-src` overrides `default-src` for scripts only. Every other directive still falls back to
+  `default-src 'self'`, so the policy keeps working.
+- A source must name a scheme and, unless it is the default for that scheme, the port. CSP matches
+  host **and** port exactly: `https://static.cloudflareinsights.com` permits 443 and nothing else.
+
+The beacon reports to `/cdn-cgi/rum` on the site's own origin, which `default-src 'self'` already
+covers — no `connect-src` change is needed.
+
 ### When the login button does nothing
 
 Upstream ships the login form's submit button **disabled**, and only `p/scripts/extra.js` enables
@@ -468,9 +497,10 @@ that opens six connections, which is why the test proxy in `test/strip-proxy.php
 | `FreshRSS.Apache.conf` | upstream conf + env-driven `OIDCRedirectURI` + `IncludeOptional` for the prefix |
 | `entrypoint.sh` | normalises the prefix, exports the OIDC paths, generates the `Alias`, hands over to the upstream entrypoint |
 | `healthcheck.sh` | probes `<prefix>/i/`, fails loudly on a broken sub-directory mapping |
-| `test/integration.sh` | 205-check end-to-end test (sub-directory, domains, OIDC login, WebSub, strip mode, email validation, allowed_hosts) |
+| `test/integration.sh` | 216-check end-to-end test (sub-directory, domains, OIDC login, WebSub, strip mode, email validation, allowed_hosts) |
 | `test/functional.sh` | 68-check end-to-end test of the product itself (install → login → subscribe → read → API) |
 | `test/browser-login.py` | logs in with a real Chromium: the crypto chain, the POST, the cookie, the reader view |
+| `test/browser-csp.py` | checks the served CSP in a browser: no executable inline script, and a third-party origin allowed or refused as configured |
 | `test/browser.sh` | runs that three ways — direct, behind a prefix-stripping proxy, behind Caddy — plus the withheld-scripts case |
 | `test/mock-idp.php` | minimal but complete OIDC provider: discovery, JWKS, RS256 `id_token`, code flow |
 | `test/mock-websub-hub.php` | minimal WebSub hub **and** prefix-preserving reverse proxy used by the test |
