@@ -37,6 +37,8 @@ CADDY_BACKEND_PORT=18117
 MIS_PORT=18118
 CSP_PORT=18304
 CSP_CADDY_PORT=18305
+CSP_ENV_PORT=18306
+CSP_ENV_BACKEND_PORT=18307
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 pass=0
@@ -496,8 +498,49 @@ for line in "$csp_out" "$csp_out2"; do
 	fail=$((fail + $(printf '%s' "$n" | grep -oE '[0-9]+ failed' | grep -oE '^[0-9]+')))
 done
 
-docker rm -f frss-csp frss-csp-caddy >/dev/null 2>&1
-rm -rf "$CSP_DIR" "$CSP_DATA" 2>/dev/null || true
+# The same relaxation, requested from the container instead of the proxy: FRESHRSS_CSP_SCRIPT_SRC
+# sets `script-src` outright, which spares the operator from editing the Caddyfile at all.
+docker rm -f frss-csp-env frss-csp-env-caddy >/dev/null 2>&1
+cat > "${CSP_DIR}/Caddyfile" <<CADDY
+http://127.0.0.1 {
+	handle ${PREFIX}/* {
+		reverse_proxy freshrss-env:80
+	}
+}
+http://localhost {
+	root * /srv
+	header Content-Type application/javascript
+	file_server
+}
+CADDY
+CSP_ENV_DATA="$(mktemp -d)"
+docker run -d --name frss-csp-env --network "$NET" --network-alias freshrss-env -p "${CSP_ENV_BACKEND_PORT}:80" \
+	-e "FRESHRSS_PATH_PREFIX=${PREFIX}" \
+	-e "FRESHRSS_CSP_SCRIPT_SRC='self' http://localhost:${CSP_ENV_PORT}" \
+	-v "${CSP_ENV_DATA}:/var/www/FreshRSS/data" "$IMAGE" >/dev/null
+wait_http "http://127.0.0.1:${CSP_ENV_BACKEND_PORT}${PREFIX}/i/?c=auth&a=login" || true
+sleep 2
+docker exec frss-csp-env php /var/www/FreshRSS/cli/do-install.php \
+	--default-user alice --db-type sqlite --db-base /var/www/FreshRSS/data/db.sqlite \
+	--auth-type form >/dev/null 2>&1 || true
+docker exec frss-csp-env php /var/www/FreshRSS/cli/create-user.php \
+	--user alice --password dummy-password >/dev/null 2>&1 || true
+docker exec frss-csp-env sh -c 'chown -R :www-data /var/www/FreshRSS/data; chmod -R g+rwX /var/www/FreshRSS/data'
+docker run -d --name frss-csp-env-caddy --network "$NET" -p "${CSP_ENV_PORT}:80" \
+	-v "${CSP_DIR}/Caddyfile:/etc/caddy/Caddyfile:ro" -v "${CSP_DIR}:/srv:ro" \
+	caddy:2-alpine >/dev/null
+sleep 5
+csp_out3="$(python3 "${SCRIPT_DIR}/browser-csp.py" "http://127.0.0.1:${CSP_ENV_PORT}" "$PREFIX" "${CSP_ENV_PORT}" --allowed 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true)"
+printf '%s' "$csp_out3" | sed 's/^/    /'
+n3="$(printf '%s' "$csp_out3" | grep -oE '[0-9]+ passed, [0-9]+ failed' | tail -1)"
+[ -n "$n3" ] && {
+	pass=$((pass + $(printf '%s' "$n3" | grep -oE '^[0-9]+')))
+	fail=$((fail + $(printf '%s' "$n3" | grep -oE '[0-9]+ failed' | grep -oE '^[0-9]+')))
+	echo "  --- FRESHRSS_CSP_SCRIPT_SRC instead of a proxy rewrite: $n3"
+}
+
+docker rm -f frss-csp frss-csp-caddy frss-csp-env frss-csp-env-caddy >/dev/null 2>&1
+rm -rf "$CSP_DIR" "$CSP_DATA" "$CSP_ENV_DATA" 2>/dev/null || true
 
 echo
 echo

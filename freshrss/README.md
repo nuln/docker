@@ -380,6 +380,7 @@ and a user moving from one domain to the other is silently signed in by the IdP.
 | `FRESHRSS_WEBSUB_BASE_URL` | *(empty)* | address advertised to WebSub hubs; wins over `websub_base_url` |
 | `TRUSTED_PROXY` | *(empty)* | CIDR of the reverse proxy, so the real client IP is logged |
 | `OIDC_ENABLED` | *(empty)* | any non-zero value activates OIDC |
+| `FRESHRSS_CSP_SCRIPT_SRC` | *(empty)* | value for `script-src`, overriding `default-src` for scripts only. Needed to let a third party injected at the edge — Cloudflare Browser Insights — actually load |
 | `CRON_MIN` | `7,37 * * * *` | feed refresh schedule — a **whole** crontab expression, not just the minutes: every 30 minutes is `*/30 * * * *`. A shorter value is completed with `* * * *`. |
 | `DATA_PATH` | *(empty)* | alternate data directory |
 
@@ -442,8 +443,16 @@ editable in the admin UI); `default-src` has none, and extensions can only amend
 
 That policy is deliberately strict and it does its job — it also blocks the
 `static.cloudflareinsights.com/beacon.min.js` that Cloudflare injects at the edge, so Browser
-Insights collects nothing and the console fills with violations. To keep the feature, allow its
-origin at the proxy; see the commented block in `Caddyfile.example`:
+Insights collects nothing and the console fills with violations. To keep the feature, allow its origin. The
+container can do it itself, which needs no change to the proxy at all:
+
+```sh
+FRESHRSS_CSP_SCRIPT_SRC="'self' https://static.cloudflareinsights.com"
+```
+
+`script-src` overrides `default-src` for scripts only, so every other directive keeps falling back
+to `default-src 'self'`. The same thing can be done at the proxy instead, if you would rather not
+put it in the environment; see the commented block in `Caddyfile.example`:
 
 ```caddyfile
 header_down Content-Security-Policy "default-src 'self'; script-src 'self' https://static.cloudflareinsights.com; frame-ancestors 'none'"

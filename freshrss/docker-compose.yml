@@ -56,6 +56,14 @@ services:
       # completed with "* * * *" by the entrypoint, so "*/30" also works.
       CRON_MIN: ${CRON_MIN:-7,37 * * * *}
 
+      # Content-Security-Policy. FreshRSS hard-codes `default-src 'self'`, which blocks anything a
+      # third party injects — most commonly Cloudflare Browser Insights, whose beacon then never
+      # loads and the browser console fills with violations. Uncomment to allow its origin; this
+      # overrides `default-src` for scripts only, and every other directive still falls back to
+      # `default-src 'self'`. Sources need a scheme and, unless it is the default for that scheme,
+      # the port, because CSP matches host *and* port exactly.
+      # FRESHRSS_CSP_SCRIPT_SRC: "'self' https://static.cloudflareinsights.com"
+
       # --- OIDC (optional, all-or-nothing) --------------------------------------------
       # Turning this on makes mod_auth_openidc handle every request. Register ONE redirect URI per
       # domain in your identity provider, each being <FRESHRSS_PATH_PREFIX>/i/oidc/ :

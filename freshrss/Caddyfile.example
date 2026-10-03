@@ -29,7 +29,11 @@
 			# lib/Minz/ActionController.php with no configuration key for `default-src`. That
 			# policy blocks the `static.cloudflareinsights.com/beacon.min.js` that Cloudflare
 			# injects at the edge, so Browser Insights never collects anything and the console
-			# fills with violations. Uncomment the next line to allow it.
+			# fills with violations.
+			#
+			# PREFER the environment: FRESHRSS_CSP_SCRIPT_SRC sets `script-src` inside the
+			# container and needs nothing here. Use the line below only if you would rather keep
+			# the policy at the edge.
 			#
 			# It REPLACES the header rather than adding to it, and that is required: several CSP
 			# headers are enforced as their intersection, i.e. the most restrictive of them, so

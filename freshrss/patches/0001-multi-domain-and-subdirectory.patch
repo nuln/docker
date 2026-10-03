@@ -1,5 +1,5 @@
 diff --git a/app/Controllers/authController.php b/app/Controllers/authController.php
-index e5afda7..cb5c316 100644
+index e5afda7..e257b64 100644
 --- a/app/Controllers/authController.php
 +++ b/app/Controllers/authController.php
 @@ -108,6 +108,10 @@ class FreshRSS_auth_Controller extends FreshRSS_ActionController {
@@ -13,6 +13,55 @@ index e5afda7..cb5c316 100644
  		FreshRSS_View::appendScript(Minz_Url::display('/scripts/vendor/bcrypt.js?' . @filemtime(PUBLIC_PATH . '/scripts/vendor/bcrypt.js')));
  
  		$limits = FreshRSS_Context::systemConf()->limits;
+@@ -220,6 +224,10 @@ class FreshRSS_auth_Controller extends FreshRSS_ActionController {
+ 			}
+ 		}
+ 		FreshRSS_View::prependTitle(_t('gen.auth.reauth.title') . ' · ');
++		// The submit button of the login form ships disabled and is only enabled by
++		// p/scripts/extra.js. This watchdog reports the case where that never happens, instead of
++		// leaving a form that renders and silently does nothing.
++		FreshRSS_View::appendScript(Minz_Url::display('/scripts/login-watchdog.js?' . @filemtime(PUBLIC_PATH . '/scripts/login-watchdog.js')));
+ 		FreshRSS_View::appendScript(Minz_Url::display('/scripts/vendor/bcrypt.js?' . @filemtime(PUBLIC_PATH . '/scripts/vendor/bcrypt.js')));
+ 	}
+ 
+diff --git a/app/FreshRSS.php b/app/FreshRSS.php
+index 1376285..135d54d 100644
+--- a/app/FreshRSS.php
++++ b/app/FreshRSS.php
+@@ -30,13 +30,27 @@ class FreshRSS extends Minz_FrontController {
+ 			die($message);
+ 		}
+ 
++		// Content-Security-Policy. Upstream hard-codes `default-src 'self'` with no configuration
++		// key, so a third party injected at the edge — Cloudflare's Browser Insights, most often —
++		// is blocked and can only be unblocked by rewriting the header in the reverse proxy.
++		// FRESHRSS_CSP_SCRIPT_SRC sets `script-src` outright, which takes precedence over
++		// `default-src` for scripts only: every other directive keeps falling back to
++		// `default-src 'self'`. Sources must include a scheme and, unless it is the default for
++		// that scheme, the port — CSP matches host *and* port exactly.
++		$csp = [
++			'default-src' => "'self'",
++			'frame-ancestors' => FreshRSS_Context::systemConf()->attributeString('csp.frame-ancestors') ?? "'none'",
++		];
+ 		if (FreshRSS_Context::systemConf()->logo_html != '') {
+-			// Relax Content Security Policy to allow external images if a custom logo HTML is used
+-			Minz_ActionController::_defaultCsp([
+-				'default-src' => "'self'",
+-				'frame-ancestors' => FreshRSS_Context::systemConf()->attributeString('csp.frame-ancestors') ?? "'none'",
+-				'img-src' => '* data:',
+-			]);
++			// Relax the policy to allow external images if a custom logo HTML is used.
++			$csp['img-src'] = '* data:';
++		}
++		$scriptSrc = getenv('FRESHRSS_CSP_SCRIPT_SRC');
++		if (is_string($scriptSrc) && $scriptSrc !== '') {
++			$csp['script-src'] = $scriptSrc;
++		}
++		if (count($csp) > 2 || isset($csp['script-src'])) {
++			Minz_ActionController::_defaultCsp($csp);
+ 		}
+ 
+ 		// Load list of extensions and enable the "system" ones.
 diff --git a/app/Models/Feed.php b/app/Models/Feed.php
 index d159ee5..0d5d1d8 100644
 --- a/app/Models/Feed.php
@@ -84,7 +133,7 @@ index 0d2a3dd..e2a7c87 100644
  			'help' => 'About <a href="https://freshrss.github.io/FreshRSS/en/users/WebSub.html" target="_blank">WebSub</a>',
  		),
 diff --git a/app/install.php b/app/install.php
-index 1a104a4..a42b979 100644
+index 1a104a4..019e278 100644
 --- a/app/install.php
 +++ b/app/install.php
 @@ -126,8 +126,19 @@ function saveStep2(): void {
@@ -109,6 +158,26 @@ index 1a104a4..a42b979 100644
  		$config_array = [
  			'salt' => generateSalt(),
  			'base_url' => $base_url,
+@@ -781,6 +792,7 @@ if (_t('gen.dir') === 'rtl') {
+ 		<link rel="shortcut icon" id="favicon" type="image/x-icon" sizes="16x16 64x64" href="../favicon.ico" />
+ 		<link rel="icon msapplication-TileImage apple-touch-icon" type="image/png" sizes="256x256" href="../themes/icons/favicon-256.png" />
+ 		<link rel="apple-touch-icon" href="../themes/icons/apple-touch-icon.png" />
++		<meta name="mobile-web-app-capable" content="yes" />
+ 		<meta name="apple-mobile-web-app-capable" content="yes" />
+ 		<meta name="apple-mobile-web-app-status-bar-style" content="black" />
+ 		<meta name="apple-mobile-web-app-title" content="FreshRSS">
+diff --git a/app/layout/layout.phtml b/app/layout/layout.phtml
+index aea36e7..eb32f35 100644
+--- a/app/layout/layout.phtml
++++ b/app/layout/layout.phtml
+@@ -39,6 +39,7 @@
+ 		<link rel="icon" id="favicon" type="image/svg+xml" href="<?= Minz_Url::display('/themes/icons/favicon.svg') ?>" />
+ 		<link rel="icon msapplication-TileImage apple-touch-icon" type="image/png" sizes="256x256" href="<?= Minz_Url::display('/themes/icons/favicon-256.png') ?>" />
+ 		<link rel="apple-touch-icon" href="<?= Minz_Url::display('/themes/icons/apple-touch-icon.png') ?>" />
++		<meta name="mobile-web-app-capable" content="yes" />
+ 		<meta name="apple-mobile-web-app-capable" content="yes" />
+ 		<meta name="apple-mobile-web-app-status-bar-style" content="black" />
+ 		<meta name="apple-mobile-web-app-title" content="<?= FreshRSS_Context::systemConf()->title ?>">
 diff --git a/app/views/configure/privacy.phtml b/app/views/configure/privacy.phtml
 index 1c03cf1..fc0abf0 100644
 --- a/app/views/configure/privacy.phtml
@@ -604,6 +673,56 @@ index 4eaaf4c..4a1c083 100644
  if (!empty($_REQUEST['hub_mode']) && $_REQUEST['hub_mode'] === 'subscribe') {
  	$leaseSeconds = empty($_REQUEST['hub_lease_seconds']) || !is_numeric($_REQUEST['hub_lease_seconds']) ? 0 : (int)$_REQUEST['hub_lease_seconds'];
  	if ($leaseSeconds > 60) {
+diff --git a/p/scripts/extra.js b/p/scripts/extra.js
+index 6bb0c67..a42e9b8 100644
+--- a/p/scripts/extra.js
++++ b/p/scripts/extra.js
+@@ -16,14 +16,25 @@ function forgetOpenCategories() {
+ 	localStorage.removeItem('FreshRSS_open_categories');
+ }
+ 
++// 0 until the first attempt, then the moment it started: the wait has to be measured across the
++// retries, not within one of them.
++let cryptoFormsStarted = 0;
++
+ function init_crypto_forms() {
+ 	const crypto_forms = document.querySelectorAll('.crypto-form');
+ 	if (crypto_forms.length === 0) {
+ 		return;
+ 	}
++	if (cryptoFormsStarted === 0) {
++		cryptoFormsStarted = Date.now();
++	}
+ 
+ 	if (!(window.bcrypt)) {
+-		if (window.console) {
++		// bcrypt.js is deferred and asynchronous, so on any normal page load this is true for a
++		// few milliseconds and the retry below succeeds. Logging that says nothing actionable and
++		// appears on every single page view, so it is only reported once the wait is long enough
++		// to be a real problem — at which point the message is worth having.
++		if (window.console && Date.now() - cryptoFormsStarted > 3000) {
+ 			console.log('FreshRSS waiting for bcrypt.js…');
+ 		}
+ 		setTimeout(init_crypto_forms, 100);
+@@ -633,9 +644,17 @@ function init_enable_notify_button() {
+ 	});
+ }
+ 
++let extraInitStarted = 0;
++
+ function init_extra_afterDOM() {
++	if (extraInitStarted === 0) {
++		extraInitStarted = Date.now();
++	}
+ 	if (!window.context) {
+-		if (window.console) {
++		// main.js is deferred and asynchronous, so this is true for a few milliseconds on every
++		// page load and the retry below succeeds. As with bcrypt.js above, the wait is only
++		// reported once it is long enough to be a real problem.
++		if (window.console && Date.now() - extraInitStarted > 3000) {
+ 			console.log('FreshRSS extra waiting for JS…');
+ 		}
+ 		setTimeout(init_extra_afterDOM, 50);
 diff --git a/p/scripts/login-watchdog.js b/p/scripts/login-watchdog.js
 new file mode 100644
 index 0000000..ea54395

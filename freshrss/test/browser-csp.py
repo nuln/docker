@@ -62,11 +62,15 @@ def main() -> int:
         browser = p.chromium.launch()
         page = browser.new_context().new_page()
         violations: list[str] = []
+        logs: list[str] = []
         page.on(
             "console",
-            lambda m: violations.append(m.text)
-            if "Content Security" in m.text or "inline script" in m.text
-            else None,
+            lambda m: (
+                logs.append(f"{m.type}: {m.text}"),
+                violations.append(m.text)
+                if "Content Security" in m.text or "inline script" in m.text
+                else None,
+            ),
         )
         # Boxed in a list so the listener can write to it.
         csp = [""]
@@ -90,6 +94,17 @@ def main() -> int:
         check(
             "FreshRSS's own scripts loaded despite the policy",
             page.evaluate("() => typeof window.bcrypt === 'object'"),
+            True,
+        )
+        check(
+            "the standard mobile-web-app-capable meta accompanies the Apple one",
+            page.evaluate(
+                """() => {
+                    const metas = Array.from(document.querySelectorAll('meta[name]'));
+                    const has = n => metas.some(m => m.getAttribute('name') === n);
+                    return has('mobile-web-app-capable') && has('apple-mobile-web-app-capable');
+                }"""
+            ),
             True,
         )
         check(
@@ -130,6 +145,15 @@ def main() -> int:
             check("an origin that is not listed stays blocked", blocked, True)
         else:
             check("the stock policy produces no violation at all", violations, [])
+            # Upstream logs "waiting for bcrypt.js…" and "waiting for JS…" from init_crypto_forms
+            # and init_extra_afterDOM. Both are true for a few milliseconds on every page load,
+            # because bcrypt.js and main.js are deferred and asynchronous, so they used to appear
+            # on every single view while saying nothing actionable. They are now only reported once
+            # the wait is long enough to be real — and that must not regress.
+            noisy = [m for m in logs if "waiting for" in m]
+            check("no transient 'waiting for …' message is logged", noisy, [])
+            errors = [m for m in logs if m.startswith(("error", "warning"))]
+            check("nothing is logged as an error or a warning", errors, [])
 
         for v in violations:
             print(f"     violation: {v[:160]}")
