@@ -248,10 +248,12 @@ services. Caddy allows a hostname to be declared in only one place, so if you ke
 service, a second `example.com` block — from any file — is a startup error.
 
 Serving FreshRSS under a path of a domain you already serve (`example.com/rss`) **cannot** be done
-from a file you add on its own: the hostname is taken, so the route has to be merged into the
-existing block. If that is what you need, this is the whole addition to your existing site block:
+from a file that declares the hostname: Caddy allows a hostname in only one place, so a second
+`example.com` block is a startup error. What you can do is keep one file per service and `import`
+each into the one site block, which is the same shape the examples above use:
 
 ```caddyfile
+# freshrss.caddy — imported into your existing site block
 handle /rss/* {
     reverse_proxy freshrss:80 {
         header_up X-Forwarded-Proto {scheme}
@@ -260,12 +262,31 @@ handle /rss/* {
     }
 }
 redir /rss /rss/ 308
-
-# Only if you also have a catch-all on this domain. Without the matcher it answers
-# every request and /rss is never proxied.
-@catchall not path /rss /rss/*
-redir @catchall https://www.example.com{uri}
 ```
+
+```caddyfile
+# Caddyfile — the site block you already have
+example.com {
+    import freshrss.caddy
+    import fallback.caddy
+}
+```
+
+**If that domain also has a catch-all redirect, it has to be a `handle` block.** This is the single
+thing most likely to send you down an afternoon:
+
+```caddyfile
+# fallback.caddy
+handle {
+    redir https://www.example.com{uri}
+}
+```
+
+A bare `redir https://www.example.com{uri}` compiles *ahead* of `handle /rss/*`, matches every
+request, and answers `/rss/` itself — no error anywhere, healthy containers, login page you never
+reach. Wrapping it in `handle` puts it in the same mutually-exclusive group as the FreshRSS route,
+where Caddy orders the two by path specificity and `/rss/*` wins. There is nothing to add to the
+file and no matcher to remember: no `@catchall`.
 
 Two rules that the examples encode, both learned the hard way:
 
@@ -276,8 +297,31 @@ Two rules that the examples encode, both learned the hard way:
   directive order evaluates `redir` and `respond` *before* `handle` and `reverse_proxy`, so an
   unqualified `redir` (a catch-all redirect to the main site) or a bare `respond 404` answers every
   request and the sub-directory is never proxied. `handle` blocks are mutually exclusive and ordered
-  by path specificity, which is why they are immune to this. The catch-all redirect additionally
-  carries a `@catchall not path /rss …` matcher, so it cannot swallow `/rss` at all.
+  by path specificity, which is why they are immune to this.
+
+### When /rss redirects somewhere else: read the compiled routes
+
+None of this is visible in the Caddyfile, because Caddy reorders what you wrote. Ask it:
+
+```sh
+docker exec <caddy> caddy adapt --config /etc/caddy/Caddyfile 2>/dev/null \
+  | python3 test/caddy-routes.py - /rss/
+```
+
+```
+effective route order (first match wins):
+   1. REDIRECT 302 -> https://www.example.com{http.request.uri} [host example.com, any path]
+   2. REVERSE_PROXY -> freshrss:80 [host example.com AND path /rss/*]
+
+  /rss/
+      answered by route 1: REDIRECT 302 -> https://www.example.com{http.request.uri}
+```
+
+Route 1 is answering `/rss/`, and `any path` says why. Wrapping that redirect in `handle` moves it
+behind route 2. `test/caddy-routes.py` takes any Caddy JSON — from `caddy adapt`, from
+`docker exec`, or saved to a file — and prints the order with the route that answers each path you
+name. `test/caddy-routes.sh` asserts the ordering for every shape described here, including the ones
+that fail, so a change to an example cannot quietly reintroduce the problem.
 
 If nothing sits in front of Caddy, do not use two hops: point `Caddyfile.example` at `freshrss:80`
 directly. One hop has none of these subtleties.
@@ -574,6 +618,8 @@ that opens six connections, which is why the test proxy in `test/strip-proxy.php
 | `healthcheck.sh` | probes `<prefix>/i/`, fails loudly on a broken sub-directory mapping |
 | `test/integration.sh` | 231-check end-to-end test (sub-directory, domains, OIDC login, WebSub, strip mode, email validation, allowed_hosts) |
 | `test/functional.sh` | 68-check end-to-end test of the product itself (install → login → subscribe → read → API) |
+| `test/caddy-routes.py` | prints a Caddy JSON config's route order and names the route that answers each path — for when a catch-all is eating `/rss` |
+| `test/caddy-routes.sh` | asserts that ordering for every proxy shape documented here, including the shapes that fail |
 | `test/browser-login.py` | logs in with a real Chromium: the crypto chain, the POST, the cookie, the reader view |
 | `test/browser-csp.py` | checks the served CSP in a browser: no executable inline script, and a third-party origin allowed or refused as configured |
 | `test/browser.sh` | runs that three ways — direct, behind a prefix-stripping proxy, behind Caddy — plus the withheld-scripts case |

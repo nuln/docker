@@ -65,6 +65,12 @@ jobs:
           git checkout -q FETCH_HEAD
           git log -1 --format='FreshRSS %H (%ad)' --date=short
 
+      # Pure config analysis — no built image needed, so a broken example fails here in seconds
+      # rather than after the multi-arch build. It is the only check that can catch a reverse-proxy
+      # example that still parses and still starts but silently routes /rss to a catch-all.
+      - name: Reverse-proxy examples route correctly
+        run: ./freshrss/test/caddy-routes.sh
+
       - name: The patch must apply cleanly
         run: |
           set -euo pipefail
