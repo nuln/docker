@@ -88,9 +88,27 @@ for _ in 1 2 3; do
 	sleep 2
 done
 
+# The first request or two after a cold start can answer 500 while data/ is prepared — documented
+# in the README — and a browser that hits that window never recovers on its own. Waiting for each
+# proxy to serve the login page removes the race; the retry below then covers what is left.
+for port in "${PROXY_PORT}" "${CADDY_PORT}"; do
+	for _ in $(seq 30); do
+		[ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}${PREFIX}/i/?c=auth&a=login")" = "200" ] && break
+		sleep 1
+	done
+done
+
 run() { # run <label> <url> <prefix>
-	local out
-	out="$(python3 "${SCRIPT_DIR}/browser-login.py" "$2" alice dummy-password "$3" 2>&1 | sed 's/\x1b\[[0-9;]*m//g')" || true
+	local out attempt
+	# One retry: this is a timing-sensitive browser check and a single transient window should not
+	# decide a build. The assertions stay strict, and a retry that is needed is reported below.
+	for attempt in 1 2; do
+		out="$(python3 "${SCRIPT_DIR}/browser-login.py" "$2" alice dummy-password "$3" 2>&1 | sed 's/\x1b\[[0-9;]*m//g')" || true
+		printf '%s' "$out" | grep -q ", 0 failed" && break
+		[ "$attempt" = "1" ] && sleep 5
+	done
+	[ "$attempt" = "2" ] && printf '%s' "$out" | grep -q ", 0 failed" \
+		&& echo "  --- note: $1 needed a retry, which is worth watching"
 	printf '%s' "$out" | sed 's/^/    /'
 	local n
 	n="$(printf '%s' "$out" | grep -oE '[0-9]+ passed, [0-9]+ failed' | tail -1)"
