@@ -378,7 +378,7 @@ and a user moving from one domain to the other is silently signed in by the IdP.
 | `FRESHRSS_PATH_PREFIX` | *(empty)* | public sub-directory, e.g. `/rss`. **The only setting a sub-directory deployment needs.** Empty = domain root. Identical on every domain. |
 | `FRESHRSS_BASE_URL` | *(empty)* | pin the base URL; wins over `data/config.php`. Full URL = one domain, path = host follows the request |
 | `FRESHRSS_WEBSUB_BASE_URL` | *(empty)* | address advertised to WebSub hubs; wins over `websub_base_url` |
-| `TRUSTED_PROXY` | *(empty)* | CIDR of the reverse proxy, so the real client IP is logged |
+| `TRUSTED_PROXY` | *(empty)* | proxy ranges allowed to send identity headers (`X-WebAuth-User` / `X-Remote-User`); OIDC / SSO only. It does **not** recover the client address — FreshRSS reads `CONN_REMOTE_ADDR` only |
 | `OIDC_ENABLED` | *(empty)* | any non-zero value activates OIDC |
 | `FRESHRSS_CSP_WARNING` | `0` | set to `1` to restore FreshRSS's "unsafe-eval" notice on admin pages. It is silenced by default: the policy forbids `unsafe-eval` on purpose and no shipped script needs it, so the notice only ever looked like a fault |
 | `FRESHRSS_CSP_SCRIPT_SRC` | *(empty)* | value for `script-src`, overriding `default-src` for scripts only. Needed to let a third party injected at the edge — Cloudflare Browser Insights — actually load |

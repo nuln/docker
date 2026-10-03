@@ -90,7 +90,9 @@ services:
       # mailer: smtp
       # smtp: {host: mail.example.net, port: 587, auth: true, username: freshrss, password: secret, secure: tls, from: freshrss@example.net}
 
-      # Only needed when a reverse proxy forwards the client's address and FreshRSS must trust it.
+      # Which proxy ranges may send identity headers (X-WebAuth-User / X-Remote-User). Only
+      # relevant to OIDC / SSO; those headers are spoofable, so the sender must be a proxy you
+      # control. It does not recover the client's address — FreshRSS reads CONN_REMOTE_ADDR only.
       # TRUSTED_PROXY: ${TRUSTED_PROXY}
 
     volumes:
