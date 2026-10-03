@@ -194,6 +194,28 @@ index 5b6c4dd..03edd6f 100644
  					<p class="help"><?= _i('help') ?> <?= _t('admin.system.websub.help') ?></p>
  					<p class="help"><?= _i('help') ?> <?= _t('admin.system.sensitive-parameter') ?></p>
  			</div>
+diff --git a/app/views/helpers/javascript_vars.phtml b/app/views/helpers/javascript_vars.phtml
+index 822d101..b1ba86f 100644
+--- a/app/views/helpers/javascript_vars.phtml
++++ b/app/views/helpers/javascript_vars.phtml
+@@ -9,7 +9,16 @@ echo json_encode([
+ 	'context' => [
+ 		'anonymous' => !FreshRSS_Auth::hasAccess(),
+ 		'admin' => FreshRSS_Auth::hasAccess('admin'),
+-		'suppress_csp_warning' => FreshRSS_Context::systemConf()->suppress_csp_warning,
++		// Upstream's init_csp_alert() probes `Function()`, and when the policy forbids
++		// 'unsafe-eval' — as this image's does, deliberately — it logs "If you see a
++		// 'unsafe-eval' warning, everything is working as intended" on every admin page. None of
++		// the scripts here use eval or new Function, so the probe always fails and the message
++		// is noise that reads like a fault. FreshRSS ships `suppress_csp_warning` for exactly
++		// this case; it is honoured here and silenced by default.
++		// FRESHRSS_CSP_WARNING=1 restores upstream's behaviour.
++		'suppress_csp_warning' => getenv('FRESHRSS_CSP_WARNING') === '1'
++			? FreshRSS_Context::systemConf()->suppress_csp_warning
++			: true,
+ 		'auto_remove_article' => !!FreshRSS_Context::isAutoRemoveAvailable(),
+ 		'hide_posts' => !(FreshRSS_Context::userConf()->display_posts || Minz_Request::actionName() === 'reader'),
+ 		'display_order' => Minz_Request::paramString('order') ?: FreshRSS_Context::userConf()->sort_order,
 diff --git a/cli/do-install.php b/cli/do-install.php
 index 63ba333..03e85d7 100755
 --- a/cli/do-install.php

@@ -66,6 +66,11 @@ services:
       # default for that scheme, the port, because CSP matches host *and* port exactly.
       FRESHRSS_CSP_SCRIPT_SRC: ${FRESHRSS_CSP_SCRIPT_SRC:-}
 
+      # FreshRSS's admin pages log an "unsafe-eval" notice whenever the policy forbids
+      # 'unsafe-eval' — which this one does, deliberately, and no shipped script needs it. It reads
+      # like a fault, so it is silenced; set to 1 to get upstream's behaviour back.
+      FRESHRSS_CSP_WARNING: ${FRESHRSS_CSP_WARNING:-0}
+
       # --- OIDC (optional, all-or-nothing) --------------------------------------------
       # Turning this on makes mod_auth_openidc handle every request. Register ONE redirect URI per
       # domain in your identity provider, each being <FRESHRSS_PATH_PREFIX>/i/oidc/ :

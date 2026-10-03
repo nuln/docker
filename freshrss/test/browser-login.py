@@ -26,6 +26,7 @@ a page that renders but never becomes interactive.
 Exits non-zero, with a diagnosis per failed check, on any mismatch.
 """
 
+import os
 import sys
 from urllib.parse import urlparse
 
@@ -36,6 +37,9 @@ from playwright.sync_api import sync_playwright
 STALL = "--stall-scripts" in sys.argv
 if STALL:
     sys.argv.remove("--stall-scripts")
+
+# FRESHRSS_CSP_WARNING=1 restores upstream's CSP notice, so the check below tolerates it.
+console_lines_allow_csp_warning = os.environ.get("FRESHRSS_CSP_WARNING") == "1"
 
 OK = "\033[32mok\033[0m"
 BAD = "\033[31mFAIL\033[0m"
@@ -252,6 +256,16 @@ def main() -> int:
         check_that(
             "the page offers a way to log out, i.e. the session is authenticated",
             logged_in,
+        )
+
+        # Upstream's init_csp_alert() runs on admin pages and, when the policy forbids
+        # 'unsafe-eval' — which this image's does — logs a line about unsafe-eval that reads like
+        # a fault. It has to stay silent unless FRESHRSS_CSP_WARNING asks for it.
+        csp_notes = [line for line in console if "unsafe-eval" in line]
+        check_that(
+            "the reader page logs no CSP warning",
+            csp_notes == [] or bool(console_lines_allow_csp_warning),
+            "; ".join(csp_notes)[:120],
         )
 
         for c in context.cookies():

@@ -380,6 +380,7 @@ and a user moving from one domain to the other is silently signed in by the IdP.
 | `FRESHRSS_WEBSUB_BASE_URL` | *(empty)* | address advertised to WebSub hubs; wins over `websub_base_url` |
 | `TRUSTED_PROXY` | *(empty)* | CIDR of the reverse proxy, so the real client IP is logged |
 | `OIDC_ENABLED` | *(empty)* | any non-zero value activates OIDC |
+| `FRESHRSS_CSP_WARNING` | `0` | set to `1` to restore FreshRSS's "unsafe-eval" notice on admin pages. It is silenced by default: the policy forbids `unsafe-eval` on purpose and no shipped script needs it, so the notice only ever looked like a fault |
 | `FRESHRSS_CSP_SCRIPT_SRC` | *(empty)* | value for `script-src`, overriding `default-src` for scripts only. Needed to let a third party injected at the edge — Cloudflare Browser Insights — actually load |
 | `CRON_MIN` | `7,37 * * * *` | feed refresh schedule — a **whole** crontab expression, not just the minutes: every 30 minutes is `*/30 * * * *`. A shorter value is completed with `* * * *`. |
 | `DATA_PATH` | *(empty)* | alternate data directory |
