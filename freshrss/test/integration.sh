@@ -301,7 +301,7 @@ docker rm -f frss-caddy-test frss-caddy >/dev/null 2>&1
 CADDY_TMP="$(mktemp -d)"
 # `http://` instead of a bare host, so Caddy serves plain HTTP and attempts no certificate.
 sed -e 's/^a\.example {/http:\/\/a.example {/' -e 's/^b\.example {/http:\/\/b.example {/' \
-	Caddyfile.example > "${CADDY_TMP}/Caddyfile"
+	"${SCRIPT_DIR}/../Caddyfile.example" > "${CADDY_TMP}/Caddyfile"
 
 adapt_out=$(docker run --rm -v "${CADDY_TMP}/Caddyfile:/etc/caddy/Caddyfile:ro" "$CADDY_IMAGE" \
 	caddy validate --config /etc/caddy/Caddyfile 2>&1) && adapt_rc=0 || adapt_rc=$?
