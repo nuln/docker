@@ -200,11 +200,15 @@ def main() -> int:
 
         # 2. A POST must actually be issued. A login that renders fine but never
         #    submits is the failure this test exists to catch.
+        # Generous, because the challenge is computed on the main thread: bcrypt.js runs two
+        # hashSync calls at cost 10 between the click and the POST, which takes seconds rather
+        # than milliseconds on a slow or non-native runner. Fifteen seconds was not enough on
+        # arm64 and produced a failure the user could never hit.
         try:
             page.wait_for_event(
                 "request",
                 predicate=lambda r: r.method == "POST" and "c=auth" in r.url,
-                timeout=15000,
+                timeout=60000,
             )
             posted = True
         except PlaywrightError:
