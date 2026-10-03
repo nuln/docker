@@ -32,6 +32,11 @@ from urllib.parse import urlparse
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
+# Set by `--stall-scripts`, which reproduces a failure mode rather than the happy path.
+STALL = "--stall-scripts" in sys.argv
+if STALL:
+    sys.argv.remove("--stall-scripts")
+
 OK = "\033[32mok\033[0m"
 BAD = "\033[31mFAIL\033[0m"
 passed = 0
@@ -52,7 +57,75 @@ def check_that(label: str, condition: bool, detail: str = "") -> None:
     check(label + (f" — {detail}" if detail else ""), bool(condition), True)
 
 
+# The login page ships its submit button disabled and only p/scripts/extra.js enables it. If
+# main.js, extra.js or bcrypt.js never loads - blocked by a policy, or stalled by a reverse proxy
+# that cannot serve parallel requests - the form is unusable forever and says nothing: the page
+# renders, the button does nothing, and no request is ever sent. This mode withholds the scripts
+# and asserts that the page reports the failure instead of sitting there.
+# The trailing `*` matters: the URLs carry a `?mtime` cache-buster, which a glob without it
+# would not match.
+STALLED_SCRIPTS = (
+    "**/scripts/main.js*",
+    "**/scripts/extra.js*",
+    "**/scripts/vendor/bcrypt.js*",
+)
+
+
+def run_stalled(base: str, prefix: str) -> None:
+    # Chromium throttles timers in a page it considers hidden, which would postpone a 15 s
+    # deadline to a minute and make the watchdog look broken.
+    launch_args = [
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+    ]
+    with sync_playwright() as p:
+        browser = p.chromium.launch(args=launch_args)
+        page = browser.new_context().new_page()
+        navigations = []
+        page.on("framenavigated", lambda f: navigations.append(f.url))
+        for pattern in STALLED_SCRIPTS:
+            page.route(pattern, lambda route: route.abort())
+        page.goto(f"{base}{prefix}/i/?c=auth&a=login", wait_until="domcontentloaded")
+        try:
+            page.wait_for_selector(".alert-error", timeout=45000)
+            reported = True
+        except PlaywrightError:
+            reported = False
+        message = ""
+        if reported:
+            message = page.eval_on_selector(".alert-error", "el => el.textContent")
+        check_that("a stalled script is reported on the page, not swallowed", reported)
+        check_that(
+            "...naming the scripts the operator has to check",
+            "main.js" in message and "bcrypt.js" in message,
+            message[:60],
+        )
+        check_that(
+            "the page did not enter a reload loop",
+            len(navigations) <= 2,
+            f"{len(navigations)} navigations",
+        )
+        check_that(
+            "the automatic reload is remembered, so it happens only once",
+            page.evaluate("() => sessionStorage.getItem('freshrss_login_reloaded')") == "1",
+        )
+        browser.close()
+
+
 def main() -> int:
+    if STALL:
+        if len(sys.argv) < 2:
+            print(__doc__)
+            return 2
+        base = sys.argv[1].rstrip("/")
+        # The credentials are irrelevant here, so the prefix is taken as the trailing argument
+        # rather than by position.
+        prefix = (sys.argv[-1] if sys.argv[-1].startswith("/") else "").rstrip("/")
+        run_stalled(base, prefix)
+        print(f"\n== stalled scripts: {passed} passed, {failed} failed")
+        return 1 if failed else 0
+
     if len(sys.argv) < 4:
         print(__doc__)
         return 2

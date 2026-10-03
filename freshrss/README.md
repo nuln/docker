@@ -429,6 +429,31 @@ itself so the image can be rebuilt from the patch alone.
   change) and requires re-registering the OIDC redirect URIs.
 - Upstream's built-in update mechanism is disabled (`disable_update`): update the image instead.
 
+### When the login button does nothing
+
+Upstream ships the login form's submit button **disabled**, and only `p/scripts/extra.js` enables
+it — after `main.js` has published `window.context` and `scripts/vendor/bcrypt.js` has loaded. If
+any of those three never arrives, the page renders, the button does nothing, and **no request is
+ever sent**: the failure is completely silent.
+
+This image adds `p/scripts/login-watchdog.js`, which the login page loads for that reason. It
+reloads once — a dropped request is usually transient — and then says which scripts to check. It
+cannot help when *every* sub-resource stalls, because it is itself a sub-resource; in that case the
+page arrives unstyled, which is itself the visible symptom.
+
+To tell the cases apart, open the browser's Network panel and reload the login page:
+
+| What you see | Cause |
+|---|---|
+| A request stuck in `(pending)`, never completing | the reverse proxy cannot serve parallel requests — the page needs six at once (document, two stylesheets, three scripts) |
+| `Failed to load resource` in the console | a script is filtered, blocked or 404 |
+| `FreshRSS waiting for bcrypt.js…` repeating | `scripts/vendor/bcrypt.js` never loaded |
+| A red banner naming the scripts | the watchdog reporting the above |
+
+A single-threaded proxy is enough to cause this: PHP's built-in server deadlocks against a browser
+that opens six connections, which is why the test proxy in `test/strip-proxy.php` sets
+`PHP_CLI_SERVER_WORKERS`.
+
 ## Files
 
 | Path | Role |
@@ -438,8 +463,10 @@ itself so the image can be rebuilt from the patch alone.
 | `FreshRSS.Apache.conf` | upstream conf + env-driven `OIDCRedirectURI` + `IncludeOptional` for the prefix |
 | `entrypoint.sh` | normalises the prefix, exports the OIDC paths, generates the `Alias`, hands over to the upstream entrypoint |
 | `healthcheck.sh` | probes `<prefix>/i/`, fails loudly on a broken sub-directory mapping |
-| `test/integration.sh` | 178-check end-to-end test (sub-directory, domains, OIDC login, WebSub, strip mode, email validation, allowed_hosts) |
+| `test/integration.sh` | 205-check end-to-end test (sub-directory, domains, OIDC login, WebSub, strip mode, email validation, allowed_hosts) |
 | `test/functional.sh` | 68-check end-to-end test of the product itself (install → login → subscribe → read → API) |
+| `test/browser-login.py` | logs in with a real Chromium: the crypto chain, the POST, the cookie, the reader view |
+| `test/browser.sh` | runs that three ways — direct, behind a prefix-stripping proxy, behind Caddy — plus the withheld-scripts case |
 | `test/mock-idp.php` | minimal but complete OIDC provider: discovery, JWKS, RS256 `id_token`, code flow |
 | `test/mock-websub-hub.php` | minimal WebSub hub **and** prefix-preserving reverse proxy used by the test |
 | `test/smtp-sink.php` | minimal SMTP server that captures the email-validation message |

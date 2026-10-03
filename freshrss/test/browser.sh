@@ -83,7 +83,7 @@ docker run -d --name brlogin-caddy --network "$NET" \
 	caddy:2-alpine >/dev/null
 
 echo "== browser login through a real browser"
-for attempt in 1 2 3; do
+for _ in 1 2 3; do
 	[ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PROXY_PORT}${PREFIX}/i/?c=auth&a=login")" = "200" ] && break
 	sleep 2
 done
@@ -102,6 +102,16 @@ run() { # run <label> <url> <prefix>
 run "direct" "http://127.0.0.1:${APP_PORT}" "$PREFIX"
 run "behind a proxy that strips the prefix" "http://127.0.0.1:${PROXY_PORT}" "$PREFIX"
 run "behind Caddy" "http://127.0.0.1:${CADDY_PORT}" "$PREFIX"
+
+# The same page with its crypto chain withheld: main.js, extra.js and bcrypt.js are aborted, which
+# is what a policy filter or a dropped request looks like to the browser. The submit button can then
+# never be enabled, so the page has to say so rather than present a form that silently does nothing.
+stall=$(python3 "${SCRIPT_DIR}/browser-login.py" --stall-scripts "http://127.0.0.1:${APP_PORT}" alice dummy-password "$PREFIX" 2>&1 | sed 's/\x1b\[[0-9;]*m//g') || true
+printf '%s' "$stall" | sed 's/^/    /'
+sn="$(printf '%s' "$stall" | grep -oE '[0-9]+ passed, [0-9]+ failed' | tail -1)"
+pass=$((pass + $(printf '%s' "$sn" | grep -oE '^[0-9]+' || echo 0)))
+fail=$((fail + $(printf '%s' "$sn" | grep -oE '[0-9]+ failed' | grep -oE '^[0-9]+' || echo 0)))
+echo "  --- scripts withheld: $sn"
 
 check "every browser scenario passed" "$fail" "0"
 

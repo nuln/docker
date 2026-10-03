@@ -1,60 +1,23 @@
-diff --git a/app/Controllers/feedController.php b/app/Controllers/feedController.php
-index afc8ce5..3a0b9a7 100644
---- a/app/Controllers/feedController.php
-+++ b/app/Controllers/feedController.php
-@@ -775,14 +775,18 @@ class FreshRSS_feed_Controller extends FreshRSS_ActionController {
- 				$feedProperties['url'] = $feed->url();
- 			} elseif ($simplePiePush !== null && $selfUrl !== '' && $selfUrl !== $feed->url()) {	// selfUrl has priority for WebSub
- 				// https://github.com/pubsubhubbub/PubSubHubbub/wiki/Moving-Feeds-or-changing-Hubs
--				Minz_Log::debug('WebSub unsubscribe ' . $feed->url(includeCredentials: false));
--				if (!$feed->pubSubHubbubSubscribe(false)) {	//Unsubscribe
--					Minz_Log::warning('Error while WebSub unsubscribing from ' . $feed->url(includeCredentials: false));
-+				if (str_starts_with($feed->url(), 'https://') && !str_starts_with($selfUrl, 'https://')) {
-+					Minz_Log::debug('WebSub: refusing to downgrade to ' . \SimplePie\Misc::url_remove_credentials($selfUrl));
-+				} else {
-+					Minz_Log::debug('WebSub unsubscribe ' . $feed->url(includeCredentials: false));
-+					if (!$feed->pubSubHubbubSubscribe(false)) {	//Unsubscribe
-+						Minz_Log::warning('Error while WebSub unsubscribing from ' . $feed->url(includeCredentials: false));
-+					}
-+					$feed->_url($selfUrl);
-+					Minz_Log::warning('Feed ' . \SimplePie\Misc::url_remove_credentials($url) .
-+						' canonical address moved to ' . $feed->url(includeCredentials: false));
-+					$feedProperties['url'] = $feed->url();
- 				}
--				$feed->_url($selfUrl);
--				Minz_Log::warning('Feed ' . \SimplePie\Misc::url_remove_credentials($url) .
--					' canonical address moved to ' . $feed->url(includeCredentials: false));
--				$feedProperties['url'] = $feed->url();
- 			}
+diff --git a/app/Controllers/authController.php b/app/Controllers/authController.php
+index e5afda7..cb5c316 100644
+--- a/app/Controllers/authController.php
++++ b/app/Controllers/authController.php
+@@ -108,6 +108,10 @@ class FreshRSS_auth_Controller extends FreshRSS_ActionController {
+ 		invalidateHttpCache();
  
- 			if ($simplePie != null) {
+ 		FreshRSS_View::prependTitle(_t('gen.auth.login') . ' · ');
++		// The submit button of the login form ships disabled and is only enabled by
++		// p/scripts/extra.js. This watchdog reports the case where that never happens, instead of
++		// leaving a form that renders and silently does nothing.
++		FreshRSS_View::appendScript(Minz_Url::display('/scripts/login-watchdog.js?' . @filemtime(PUBLIC_PATH . '/scripts/login-watchdog.js')));
+ 		FreshRSS_View::appendScript(Minz_Url::display('/scripts/vendor/bcrypt.js?' . @filemtime(PUBLIC_PATH . '/scripts/vendor/bcrypt.js')));
+ 
+ 		$limits = FreshRSS_Context::systemConf()->limits;
 diff --git a/app/Models/Feed.php b/app/Models/Feed.php
-index 670f017..0d5d1d8 100644
+index d159ee5..0d5d1d8 100644
 --- a/app/Models/Feed.php
 +++ b/app/Models/Feed.php
-@@ -1360,12 +1360,18 @@ class FreshRSS_Feed extends Minz_Model {
- 	//<WebSub>
- 
- 	public function pubSubHubbubEnabled(): bool {
-+		// Whether the current user is enrolled in the WebSub of that topic
-+		$currentUser = Minz_User::name() ?? '';
-+		if ($currentUser === '') {
-+			return false;
-+		}
- 		$url = $this->selfUrl ?: $this->url;
--		$hubFilename = PSHB_PATH . '/feeds/' . sha1($url) . '/!hub.json';
--		if (($hubFile = @file_get_contents($hubFilename)) != false) {
-+		$path = PSHB_PATH . '/feeds/' . sha1($url);
-+		if (($hubFile = @file_get_contents($path . '/!hub.json')) != false) {
- 			$hubJson = json_decode($hubFile, true);
- 			if (is_array($hubJson) && empty($hubJson['error']) &&
--				(empty($hubJson['lease_end']) || $hubJson['lease_end'] > time())) {
-+				(empty($hubJson['lease_end']) || $hubJson['lease_end'] > time()) &&
-+				file_exists($path . '/' . $currentUser . '.txt')) {
- 				return true;
- 			}
- 		}
-@@ -1393,12 +1399,15 @@ class FreshRSS_Feed extends Minz_Model {
+@@ -1399,7 +1399,9 @@ class FreshRSS_Feed extends Minz_Model {
  
  	public function pubSubHubbubPrepare(): string|false {
  		$key = '';
@@ -65,47 +28,7 @@ index 670f017..0d5d1d8 100644
  		// If they have the same host, they can reach each other (e.g., localhost to localhost)
  		if ((Minz_Request::serverIsPublic($baseUrl) || self::isSameHost($this->hubUrl, $baseUrl)) &&
  			$this->hubUrl !== '' && $this->selfUrl !== '' && @is_dir(PSHB_PATH)) {
- 			$path = PSHB_PATH . '/feeds/' . sha1($this->selfUrl);
- 			$hubFilename = $path . '/!hub.json';
-+			$currentUser = Minz_User::name() ?? '';
- 			if (($hubFile = @file_get_contents($hubFilename)) != false) {
- 				$hubJson = json_decode($hubFile, true);
- 				if (!is_array($hubJson) || empty($hubJson['key']) || !is_string($hubJson['key']) || !ctype_xdigit($hubJson['key'])) {
-@@ -1407,6 +1416,16 @@ class FreshRSS_Feed extends Minz_Model {
- 					Minz_Log::warning($text, PSHB_LOG);
- 					return false;
- 				}
-+				if (($hubJson['hub'] ?? null) !== $this->hubUrl) {
-+					if (FreshRSS_user_Controller::checkUsername($currentUser) && file_exists($path . '/' . $currentUser . '.txt')) {
-+						unlink($path . '/' . $currentUser . '.txt');
-+					}
-+					$text = 'WebSub: Hub ' . $this->hubUrl . ' currently advertised by ' . $this->url .
-+						' does not match the hub file! Not subscribing ' . $currentUser;
-+					Minz_Log::warning($text);
-+					Minz_Log::warning($text, PSHB_LOG);
-+					return false;
-+				}
- 				if (!empty($hubJson['lease_end']) && is_int($hubJson['lease_end']) && $hubJson['lease_end'] < (time() + (3600 * 23))) {	//TODO: Make a better policy
- 					$text = 'WebSub lease ends at '
- 						. date('c', empty($hubJson['lease_end']) ? time() : $hubJson['lease_end'])
-@@ -1420,7 +1439,7 @@ class FreshRSS_Feed extends Minz_Model {
- 				}
- 			} else {
- 				@mkdir($path, 0770, true);
--				$key = sha1($path . FreshRSS_Context::systemConf()->salt);
-+				$key = bin2hex(random_bytes(32));
- 				$hubJson = [
- 					'hub' => $this->hubUrl,
- 					'key' => $key,
-@@ -1432,7 +1451,6 @@ class FreshRSS_Feed extends Minz_Model {
- 				Minz_Log::debug($text);
- 				Minz_Log::debug($text, PSHB_LOG);
- 			}
--			$currentUser = Minz_User::name() ?? '';
- 			if (FreshRSS_user_Controller::checkUsername($currentUser) && !file_exists($path . '/' . $currentUser . '.txt')) {
- 				touch($path . '/' . $currentUser . '.txt');
- 			}
-@@ -1447,7 +1465,7 @@ class FreshRSS_Feed extends Minz_Model {
+@@ -1463,7 +1465,7 @@ class FreshRSS_Feed extends Minz_Model {
  		} else {
  			$url = $this->url;	//Always use current URL during unsubscribe
  		}
@@ -114,7 +37,7 @@ index 670f017..0d5d1d8 100644
  		// If they have the same host, they can reach each other (e.g., localhost to localhost)
  		if ($url !== '' && (Minz_Request::serverIsPublic($baseUrl) || self::isSameHost($url, $baseUrl) || !$state)) {
  			$hubFilename = PSHB_PATH . '/feeds/' . sha1($url) . '/!hub.json';
-@@ -1462,7 +1480,7 @@ class FreshRSS_Feed extends Minz_Model {
+@@ -1478,7 +1480,7 @@ class FreshRSS_Feed extends Minz_Model {
  				Minz_Log::warning('Invalid JSON for WebSub: ' . $this->url);
  				return false;
  			}
@@ -186,6 +109,71 @@ index 1a104a4..a42b979 100644
  		$config_array = [
  			'salt' => generateSalt(),
  			'base_url' => $base_url,
+diff --git a/app/views/auth/formLogin.phtml b/app/views/auth/formLogin.phtml
+index e7c937c..a4acb44 100644
+--- a/app/views/auth/formLogin.phtml
++++ b/app/views/auth/formLogin.phtml
+@@ -53,6 +53,60 @@
+ 			</button>
+ 		</div>
+ 	</form>
++
++	<?php /*
++		The submit button above ships disabled and is only enabled by p/scripts/extra.js, after
++		main.js has published `window.context` and bcrypt.js has loaded. Any of the three failing
++		to load — blocked by a Content-Security-Policy, stalled by a reverse proxy that cannot
++		serve parallel requests, a flaky CDN — therefore leaves the form permanently unusable and
++		says nothing: the page renders, the button does nothing, and no request is ever sent.
++
++		The watchdog below is inline on purpose. An inline script is part of the document, so it
++		runs even when the external ones never arrive, which is exactly the situation it exists to
++		report. It reloads once — a stalled request is usually transient — and the reload is
++		remembered in sessionStorage so it cannot become a loop. The text is not translated: it is
++		an error path, and adding a key to every locale file for it would dwarf this change.
++	*/ ?>
++	<script>
++	(function () {
++		var button = document.getElementById('loginButton');
++		if (!button) {
++			return;
++		}
++		var RELOAD_FLAG = 'freshrss_login_reloaded';
++		var DEADLINE_MS = 15000;
++		var started = Date.now();
++		var poll = setInterval(function () {
++			if (!button.disabled) {
++				clearInterval(poll);
++				return;
++			}
++			if (Date.now() - started < DEADLINE_MS) {
++				return;
++			}
++			clearInterval(poll);
++
++			var reload = false;
++			try {
++				reload = sessionStorage.getItem(RELOAD_FLAG) === null;
++				sessionStorage.setItem(RELOAD_FLAG, '1');
++			} catch (e) {
++				reload = true;	// Storage disabled: reload anyway rather than stay stuck.
++			}
++			if (reload) {
++				location.reload();
++				return;
++			}
++
++			var note = document.createElement('p');
++			note.className = 'alert alert-error';
++			note.textContent =
++				'The scripts this page needs did not load, so the login form cannot be used. '
++				+ 'Check that main.js, extra.js and scripts/vendor/bcrypt.js are reachable, then reload.';
++			button.parentNode.appendChild(note);
++		}, 500);
++	}());
++	</script>
+ </main>
+ 
+ <footer class="main-footer">
 diff --git a/app/views/configure/privacy.phtml b/app/views/configure/privacy.phtml
 index 1c03cf1..fc0abf0 100644
 --- a/app/views/configure/privacy.phtml
@@ -384,7 +372,7 @@ index 9304599..e18d7bc 100644
   *  connection_uri_params:string,pdo_options:array<int,int|string|bool>} $db
   * @property bool $disable_update
 diff --git a/lib/Minz/Request.php b/lib/Minz/Request.php
-index 1f1bd0a..1da4556 100644
+index 12b3051..1da4556 100644
 --- a/lib/Minz/Request.php
 +++ b/lib/Minz/Request.php
 @@ -294,18 +294,88 @@ class Minz_Request {
@@ -623,15 +611,6 @@ index 1f1bd0a..1da4556 100644
  	/**
  	 * Resolve a hostname to its first found IP address (IPv4 or IPv6).
  	 *
-@@ -584,7 +731,7 @@ class Minz_Request {
- 			return false;
- 		}
- 		$conf = FreshRSS_UserConfiguration::getForUser($username);
--		if ($conf === null || !hash_equals($conf->token, $token_param)) {
-+		if ($conf === null || !$conf->enabled || !hash_equals($conf->token, $token_param)) {
- 			return false;
- 		}
- 		return true;
 diff --git a/lib/Minz/Session.php b/lib/Minz/Session.php
 index 5251e31..f265b95 100644
 --- a/lib/Minz/Session.php
@@ -669,7 +648,7 @@ index bedb094..89806fc 100644
  			if ($isArray) {
  				$url_string .= PUBLIC_TO_INDEX_PATH;
 diff --git a/p/api/pshb.php b/p/api/pshb.php
-index acba28e..4a1c083 100644
+index 4eaaf4c..4a1c083 100644
 --- a/p/api/pshb.php
 +++ b/p/api/pshb.php
 @@ -67,6 +67,17 @@ if (empty($users)) {
@@ -690,20 +669,92 @@ index acba28e..4a1c083 100644
  if (!empty($_REQUEST['hub_mode']) && $_REQUEST['hub_mode'] === 'subscribe') {
  	$leaseSeconds = empty($_REQUEST['hub_lease_seconds']) || !is_numeric($_REQUEST['hub_lease_seconds']) ? 0 : (int)$_REQUEST['hub_lease_seconds'];
  	if ($leaseSeconds > 60) {
-@@ -128,10 +139,10 @@ if ($httpLink !== '' && preg_match_all('/<([^>]+)>;\\s*rel="([^"]+)"/', $httpLin
- 	}
- }
- 
--if (FreshRSS_http_Util::compareUrlIgnoringHttps($self, $canonical) !== 0) {
--	//header('HTTP/1.1 422 Unprocessable Entity');
-+if ($self !== '' && FreshRSS_http_Util::compareUrlIgnoringHttps($self, $canonical) !== 0) {
-+	header('HTTP/1.1 422 Unprocessable Entity');
- 	Minz_Log::warning('Warning: Self URL [' . $self . '] does not match registered canonical URL!: ' . $canonical, PSHB_LOG);
--	//die('Self URL does not match registered canonical URL!');
-+	die('Self URL does not match registered canonical URL!');
- }
- 
- Minz_ExtensionManager::init();
+diff --git a/p/scripts/login-watchdog.js b/p/scripts/login-watchdog.js
+new file mode 100644
+index 0000000..ea54395
+--- /dev/null
++++ b/p/scripts/login-watchdog.js
+@@ -0,0 +1,79 @@
++// Watchdog for the login form.
++//
++// The submit button ships disabled and is enabled only by p/scripts/extra.js, once main.js has
++// published `window.context` and bcrypt.js has loaded. Should any of those three fail to arrive —
++// filtered by a Content-Security-Policy allowlist, blocked by an extension, a 404 from a partial
++// deployment, a proxy that drops some requests — the form becomes permanently unusable and says
++// nothing at all: the page renders, the button does nothing, and no request is ever sent.
++//
++// This script reports that instead of leaving the operator guessing, and reloads once because a
++// dropped request is usually transient. The reload is remembered in sessionStorage so it can never
++// become a loop.
++//
++// It is a separate file rather than inline because FreshRSS sends `default-src 'self'`, which
++// forbids inline script. It therefore cannot help when *every* sub-resource stalls; in that case
++// the page arrives unstyled, which is itself the visible symptom.
++'use strict';
++
++(function () {
++	const RELOAD_FLAG = 'freshrss_login_reloaded';
++	const DEADLINE_MS = 15000;
++	const POLL_MS = 500;
++
++	function button() {
++		return document.getElementById('loginButton');
++	}
++
++	function report() {
++		const btn = button();
++		if (!btn || !btn.parentNode) {
++			return;
++		}
++		const note = document.createElement('p');
++		note.className = 'alert alert-error';
++		note.id = 'loginWatchdogWarning';
++		note.textContent =
++			'The scripts this login form needs did not load, so it cannot be used. '
++			+ 'Check that scripts/main.js, scripts/extra.js and scripts/vendor/bcrypt.js are '
++			+ 'reachable, then reload this page.';
++		btn.parentNode.appendChild(note);
++	}
++
++	function shouldReload() {
++		try {
++			if (sessionStorage.getItem(RELOAD_FLAG) !== null) {
++				return false;
++			}
++			sessionStorage.setItem(RELOAD_FLAG, '1');
++			return true;
++		} catch (e) {
++			return true;	// Storage unavailable: better to reload than to stay stuck.
++		}
++	}
++
++	function watch() {
++		const started = Date.now();
++		const poll = setInterval(function () {
++			const btn = button();
++			if (btn && !btn.disabled) {
++				clearInterval(poll);
++				return;
++			}
++			if (Date.now() - started < DEADLINE_MS) {
++				return;
++			}
++			clearInterval(poll);
++			if (shouldReload()) {
++				location.reload();
++				return;
++			}
++			report();
++		}, POLL_MS);
++	}
++
++	if (document.readyState === 'loading') {
++		document.addEventListener('DOMContentLoaded', watch);
++	} else {
++		watch();
++	}
++}());
+\ No newline at end of file
 diff --git a/tests/lib/Minz/RequestTest.php b/tests/lib/Minz/RequestTest.php
 new file mode 100644
 index 0000000..b65c340
