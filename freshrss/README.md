@@ -451,7 +451,14 @@ FRESHRSS_CSP_SCRIPT_SRC="'self' https://static.cloudflareinsights.com"
 ```
 
 `script-src` overrides `default-src` for scripts only, so every other directive keeps falling back
-to `default-src 'self'`. The same thing can be done at the proxy instead, if you would rather not
+to `default-src 'self'`.
+
+It is applied in `Minz_ActionController::declareCspHeader()`, at the single point where the header
+is assembled — not during bootstrap. Controllers replace the whole policy through `_csp()`;
+`indexController` does, to permit frames, images and media, so a value set earlier is silently
+dropped on the reader page and only the login page carries it. The startup log line
+(`docker logs freshrss | grep CSP`) confirms the value reached the container: an entry in `.env`
+only takes effect because the compose files pass the variable through. The same thing can be done at the proxy instead, if you would rather not
 put it in the environment; see the commented block in `Caddyfile.example`:
 
 ```caddyfile
@@ -506,7 +513,7 @@ that opens six connections, which is why the test proxy in `test/strip-proxy.php
 | `FreshRSS.Apache.conf` | upstream conf + env-driven `OIDCRedirectURI` + `IncludeOptional` for the prefix |
 | `entrypoint.sh` | normalises the prefix, exports the OIDC paths, generates the `Alias`, hands over to the upstream entrypoint |
 | `healthcheck.sh` | probes `<prefix>/i/`, fails loudly on a broken sub-directory mapping |
-| `test/integration.sh` | 216-check end-to-end test (sub-directory, domains, OIDC login, WebSub, strip mode, email validation, allowed_hosts) |
+| `test/integration.sh` | 230-check end-to-end test (sub-directory, domains, OIDC login, WebSub, strip mode, email validation, allowed_hosts) |
 | `test/functional.sh` | 68-check end-to-end test of the product itself (install → login → subscribe → read → API) |
 | `test/browser-login.py` | logs in with a real Chromium: the crypto chain, the POST, the cookie, the reader view |
 | `test/browser-csp.py` | checks the served CSP in a browser: no executable inline script, and a third-party origin allowed or refused as configured |

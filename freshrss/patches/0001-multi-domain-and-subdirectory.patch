@@ -24,44 +24,6 @@ index e5afda7..e257b64 100644
  		FreshRSS_View::appendScript(Minz_Url::display('/scripts/vendor/bcrypt.js?' . @filemtime(PUBLIC_PATH . '/scripts/vendor/bcrypt.js')));
  	}
  
-diff --git a/app/FreshRSS.php b/app/FreshRSS.php
-index 1376285..135d54d 100644
---- a/app/FreshRSS.php
-+++ b/app/FreshRSS.php
-@@ -30,13 +30,27 @@ class FreshRSS extends Minz_FrontController {
- 			die($message);
- 		}
- 
-+		// Content-Security-Policy. Upstream hard-codes `default-src 'self'` with no configuration
-+		// key, so a third party injected at the edge — Cloudflare's Browser Insights, most often —
-+		// is blocked and can only be unblocked by rewriting the header in the reverse proxy.
-+		// FRESHRSS_CSP_SCRIPT_SRC sets `script-src` outright, which takes precedence over
-+		// `default-src` for scripts only: every other directive keeps falling back to
-+		// `default-src 'self'`. Sources must include a scheme and, unless it is the default for
-+		// that scheme, the port — CSP matches host *and* port exactly.
-+		$csp = [
-+			'default-src' => "'self'",
-+			'frame-ancestors' => FreshRSS_Context::systemConf()->attributeString('csp.frame-ancestors') ?? "'none'",
-+		];
- 		if (FreshRSS_Context::systemConf()->logo_html != '') {
--			// Relax Content Security Policy to allow external images if a custom logo HTML is used
--			Minz_ActionController::_defaultCsp([
--				'default-src' => "'self'",
--				'frame-ancestors' => FreshRSS_Context::systemConf()->attributeString('csp.frame-ancestors') ?? "'none'",
--				'img-src' => '* data:',
--			]);
-+			// Relax the policy to allow external images if a custom logo HTML is used.
-+			$csp['img-src'] = '* data:';
-+		}
-+		$scriptSrc = getenv('FRESHRSS_CSP_SCRIPT_SRC');
-+		if (is_string($scriptSrc) && $scriptSrc !== '') {
-+			$csp['script-src'] = $scriptSrc;
-+		}
-+		if (count($csp) > 2 || isset($csp['script-src'])) {
-+			Minz_ActionController::_defaultCsp($csp);
- 		}
- 
- 		// Load list of extensions and enable the "system" ones.
 diff --git a/app/Models/Feed.php b/app/Models/Feed.php
 index d159ee5..0d5d1d8 100644
 --- a/app/Models/Feed.php
@@ -361,6 +323,40 @@ index a7dae10..6a303f5 100644
  	# Specify address of the FreshRSS auto-update server.
  	'auto_update_url' => 'https://update.freshrss.org',
  
+diff --git a/lib/Minz/ActionController.php b/lib/Minz/ActionController.php
+index 9f9fa46..08b2a09 100644
+--- a/lib/Minz/ActionController.php
++++ b/lib/Minz/ActionController.php
+@@ -102,14 +102,24 @@ abstract class Minz_ActionController {
+ 	 * Send HTTP Content-Security-Policy header based on declared policies.
+ 	 */
+ 	public function declareCspHeader(): void {
+-		$policies = [];
++		$policies = $this->csp_policies;
+ 		foreach (Minz_ExtensionManager::listExtensions(true) as $extension) {
+-			$extension->amendCsp($this->csp_policies);
++			$extension->amendCsp($policies);
+ 		}
+-		foreach ($this->csp_policies as $directive => $sources) {
+-			$policies[] = $directive . ' ' . $sources;
++		// FRESHRSS_CSP_SCRIPT_SRC is applied here, at the single point where the header is built,
++		// rather than during bootstrap: controllers replace the whole policy through _csp() —
++		// indexController does, to permit frames, images and media — so a value set before the
++		// action runs is silently dropped on exactly those pages. `script-src` takes precedence
++		// over `default-src` for scripts only, so every other directive is unaffected.
++		$scriptSrc = getenv('FRESHRSS_CSP_SCRIPT_SRC');
++		if (is_string($scriptSrc) && $scriptSrc !== '') {
++			$policies['script-src'] = $scriptSrc;
+ 		}
+-		header('Content-Security-Policy: ' . implode('; ', $policies));
++		$directives = [];
++		foreach ($policies as $directive => $sources) {
++			$directives[] = $directive . ' ' . $sources;
++		}
++		header('Content-Security-Policy: ' . implode('; ', $directives));
+ 	}
+ 
+ 	/**
 diff --git a/lib/Minz/Configuration.php b/lib/Minz/Configuration.php
 index 9304599..e18d7bc 100644
 --- a/lib/Minz/Configuration.php

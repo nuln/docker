@@ -539,6 +539,29 @@ n3="$(printf '%s' "$csp_out3" | grep -oE '[0-9]+ passed, [0-9]+ failed' | tail -
 	echo "  --- FRESHRSS_CSP_SCRIPT_SRC instead of a proxy rewrite: $n3"
 }
 
+# The reader page is the one that broke: indexController replaces the entire policy through
+# _csp() — to allow frames, images and media — so a script-src applied during bootstrap was
+# silently dropped there and only the login page carried it. Assert it on the page that a logged-in
+# user actually spends their time on.
+reader_jar="$(mktemp)"
+curl -s -c "$reader_jar" -b "$reader_jar" -o "${CSP_DIR}/login.html" \
+	"http://127.0.0.1:${CSP_ENV_BACKEND_PORT}${PREFIX}/i/?c=auth&a=login" || true
+rnonce=$(curl -s -c "$reader_jar" -b "$reader_jar" \
+	"http://127.0.0.1:${CSP_ENV_BACKEND_PORT}${PREFIX}/i/?c=javascript&a=nonce&user=alice" \
+	| sed -n 's/.*"nonce":"\([A-Za-z0-9]*\)".*/\1/p' | head -1)
+rcsrf=$(sed -n 's/.*name="_csrf" value="\([a-f0-9]*\)".*/\1/p' "${CSP_DIR}/login.html" 2>/dev/null | head -1)
+rchal=$("${SCRIPT_DIR}/bcrypt-challenge.sh" frss-csp-env alice dummy-password "$rnonce" 2>/dev/null | tail -1)
+curl -s -c "$reader_jar" -b "$reader_jar" -o /dev/null \
+	-d "_csrf=$rcsrf" -d 'username=alice' -d "nonce=$rnonce" -d "challenge=$rchal" \
+	"http://127.0.0.1:${CSP_ENV_BACKEND_PORT}${PREFIX}/i/?c=auth&a=login" || true
+reader_csp=$(curl -s -b "$reader_jar" -D - -o /dev/null \
+	"http://127.0.0.1:${CSP_ENV_BACKEND_PORT}${PREFIX}/i/?rid=0000000000000000" 2>/dev/null \
+	| tr -d '\r' | sed -n 's/^[Cc]ontent-[Ss]ecurity-[Pp]olicy: //p' | head -1)
+rm -f "$reader_jar"
+has "the reader page keeps script-src despite replacing the whole policy" \
+	"$reader_csp" "script-src 'self' http://localhost:${CSP_ENV_PORT}"
+has "…and keeps its own directives as well" "$reader_csp" "frame-src *"
+
 docker rm -f frss-csp frss-csp-caddy frss-csp-env frss-csp-env-caddy >/dev/null 2>&1
 rm -rf "$CSP_DIR" "$CSP_DATA" "$CSP_ENV_DATA" 2>/dev/null || true
 

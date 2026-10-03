@@ -47,12 +47,14 @@ services:
       TRUSTED_PROXY: ${TRUSTED_PROXY:-172.16.0.0/12}
 
       # Content-Security-Policy. FreshRSS hard-codes `default-src 'self'`, which blocks anything a
-      # third party injects — most commonly Cloudflare Browser Insights, whose beacon then never
-      # loads and the browser console fills with violations. Uncomment to allow its origin; this
-      # overrides `default-src` for scripts only, and every other directive still falls back to
-      # `default-src 'self'`. Sources need a scheme and, unless it is the default for that scheme,
-      # the port, because CSP matches host *and* port exactly.
-      # FRESHRSS_CSP_SCRIPT_SRC: "'self' https://static.cloudflareinsights.com"
+      # third party injects into the page — most commonly Cloudflare Browser Insights, whose beacon
+      # then never loads and the console fills with violations. Empty by default, keeping the strict
+      # upstream policy; set it in .env to allow an origin, e.g.
+      #   FRESHRSS_CSP_SCRIPT_SRC='self' https://static.cloudflareinsights.com
+      # It sets `script-src`, which overrides `default-src` for scripts only: every other directive
+      # still falls back to `default-src 'self'`. Sources need a scheme and, unless it is the
+      # default for that scheme, the port, because CSP matches host *and* port exactly.
+      FRESHRSS_CSP_SCRIPT_SRC: ${FRESHRSS_CSP_SCRIPT_SRC:-}
 
       # --- OIDC (optional, all-or-nothing) --------------------------------------------
       # One redirect URI per domain, each <FRESHRSS_PATH_PREFIX>/i/oidc/ :

@@ -153,6 +153,13 @@ fi
 # When they disagree the instance starts, serves 200s, and the browser is quietly moved out of
 # the sub-directory on the first login — the cookie is scoped to /rss/ but the redirect lands on
 # /i/, so the session never comes back and the login page repeats forever.
+# Say what the Content-Security-Policy will actually contain, so a deployment that expects a
+# relaxed policy can confirm from `docker logs` that the variable reached the container at all —
+# an entry in `.env` alone does nothing unless the compose file passes it through.
+if [ -n "${FRESHRSS_CSP_SCRIPT_SRC:-}" ]; then
+	echo "FreshRSS: CSP script-src = ${FRESHRSS_CSP_SCRIPT_SRC} (from the environment)"
+fi
+
 if [ -f "${FRESH_RSS_ROOT}/data/config.php" ]; then
 	# Read the stored value rather than sourcing the file: config.php is PHP, not shell.
 	stored_base=$(sed -n "s/^[[:space:]]*'base_url'[[:space:]]*=>[[:space:]]*'\(.*\)',[[:space:]]*$/\1/p" \
