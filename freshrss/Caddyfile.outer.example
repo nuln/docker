@@ -1,31 +1,41 @@
-# Edge Caddy — the hop the browser reaches, in a two-hop deployment.
+# Edge Caddy for FreshRSS — a self-contained file.
 #
-# Pairs with Caddyfile.inner.example, which forwards to the FreshRSS container. If nothing sits in
-# front of Caddy, you do not need two hops: point this file at `freshrss:80` directly and drop the
-# inner one entirely.
+# Give FreshRSS its own subdomain (`rss.example.com`) and this file is the whole change: it declares
+# one site block, needs no catch-all, and touches none of your other services. That matters if you
+# keep one file per service, because Caddy allows a hostname to be declared in only one place —
+# a second `example.com` block, from any file, is a startup error. A dedicated subdomain sidesteps
+# that entirely.
 #
-# Replace `dukangxu.com`, `caddy-inner` and the fallback target with your own values.
+# Serving FreshRSS under a path of a domain you already serve (`example.com/rss`) cannot be done from
+# a single added file: the host is already taken, so the `/rss/*` route has to be merged into that
+# existing block, and any catch-all redirect there must be qualified with a matcher or it will
+# swallow `/rss` before the proxy is reached. The README shows that variant too.
+#
+# Pairs with Caddyfile.inner.example when something in front of Caddy already terminates the
+# client's connection. If Caddy is the first hop, use Caddyfile.example instead and drop the inner
+# one entirely.
+#
+# Replace `rss.example.com` and `caddy-inner` with your own values.
 
-dukangxu.com {
+rss.example.com {
 	# The FreshRSS sub-directory, reached through the inner Caddy. `handle`, not `handle_path`:
 	# the request must arrive at FreshRSS as /rss/… with the prefix intact.
 	handle /rss/* {
 		reverse_proxy caddy-inner:80 {
-			# This hop does know what the client used, so it sets the headers rather than
-			# relaying them. The inner Caddy then passes them on untouched.
+			# This hop knows what the client used, so it sets the forwarding headers rather than
+			# relaying them; the inner Caddy passes them on untouched.
 			header_up X-Forwarded-Host {host}
 			header_up X-Forwarded-Proto {scheme}
 			header_up X-Forwarded-Port {server_port}
 		}
 	}
 
+	# A bare `/rss` has to reach `/rss/`, which is the FreshRSS entry point.
 	redir /rss /rss/ 308
 
-	# Everything else on this domain is forwarded to the main site. The matcher is what keeps this
-	# from swallowing /rss: Caddy's built-in directive order evaluates `redir` before `handle`, so a
-	# catch-all redirect with no matcher would answer every request and /rss would never be proxied.
-	@catchall not path /rss /rss/*
-	redir @catchall https://www.example.com{uri}
-
+	# This hostname serves FreshRSS and nothing else. `respond 404` never competes with the
+	# `handle` above: handle blocks are mutually exclusive and ordered by path specificity, whereas
+	# Caddy's built-in directive order would evaluate a bare `respond` or `redir` first and let it
+	# answer every request instead of proxying.
 	respond 404
 }

@@ -242,6 +242,31 @@ cp Caddyfile.inner.example Caddyfile.inner
 docker compose -f docker-compose.two-hop.yml up -d
 ```
 
+**Give FreshRSS its own subdomain.** The example is built that way, and it is what makes the file
+self-contained: it declares one site block, needs no catch-all, and modifies none of your other
+services. Caddy allows a hostname to be declared in only one place, so if you keep one file per
+service, a second `example.com` block — from any file — is a startup error.
+
+Serving FreshRSS under a path of a domain you already serve (`example.com/rss`) **cannot** be done
+from a file you add on its own: the hostname is taken, so the route has to be merged into the
+existing block. If that is what you need, this is the whole addition to your existing site block:
+
+```caddyfile
+handle /rss/* {
+    reverse_proxy freshrss:80 {
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-Host {host}
+        header_up X-Forwarded-Port {server_port}
+    }
+}
+redir /rss /rss/ 308
+
+# Only if you also have a catch-all on this domain. Without the matcher it answers
+# every request and /rss is never proxied.
+@catchall not path /rss /rss/*
+redir @catchall https://www.example.com{uri}
+```
+
 Two rules that the examples encode, both learned the hard way:
 
 - **The inner Caddy must have no `ports:`.** It trusts the `X-Forwarded-*` headers it receives, which
