@@ -32,6 +32,8 @@ MAIL_PORT=18113
 FLAG_PORT=18111
 ALLOW_PORT=18114
 CRON_PORT=18115
+CADDY_PORT=18116
+CADDY_BACKEND_PORT=18117
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 pass=0
@@ -287,7 +289,93 @@ else
 fi
 docker rm -f frss-cron >/dev/null 2>&1
 rm -rf "$CRON_DATA_DIR" 2>/dev/null || true
+echo
+echo "== 5a4. a real Caddy in front, exactly as Caddyfile.example configures it"
+# Caddyfile.example is documentation, so nothing exercised it — and it did not even load:
+# `header_up` was written as a top-level directive instead of a reverse_proxy option, which Caddy
+# rejects with "unrecognized directive". A configuration file that cannot start is the worst kind
+# of documentation, so it is validated and then driven end to end here.
+CADDY_IMAGE="caddy:2-alpine"
 
+docker rm -f frss-caddy-test frss-caddy >/dev/null 2>&1
+CADDY_TMP="$(mktemp -d)"
+# `http://` instead of a bare host, so Caddy serves plain HTTP and attempts no certificate.
+sed -e 's/^a\.example {/http:\/\/a.example {/' -e 's/^b\.example {/http:\/\/b.example {/' \
+	Caddyfile.example > "${CADDY_TMP}/Caddyfile"
+
+adapt_out=$(docker run --rm -v "${CADDY_TMP}/Caddyfile:/etc/caddy/Caddyfile:ro" "$CADDY_IMAGE" \
+	caddy validate --config /etc/caddy/Caddyfile 2>&1) && adapt_rc=0 || adapt_rc=$?
+if [ "$adapt_rc" -eq 0 ]; then
+	ok "Caddyfile.example is valid Caddy configuration"
+else
+	bad "Caddyfile.example is valid Caddy configuration" \
+		"$(printf '%s' "$adapt_out" | tail -1)" "a config Caddy accepts"
+fi
+
+CADDY_DATA="$(mktemp -d)"
+docker run -d --name frss-caddy-test --network "$NET" --network-alias freshrss \
+	-p "${CADDY_BACKEND_PORT}:80" \
+	-e "FRESHRSS_PATH_PREFIX=${PREFIX}" \
+	-v "${CADDY_DATA}:/var/www/FreshRSS/data" "$IMAGE" >/dev/null
+wait_http "http://127.0.0.1:${CADDY_BACKEND_PORT}${PREFIX}/i/?c=auth&a=login" || true
+sleep 2
+docker exec frss-caddy-test php /var/www/FreshRSS/cli/do-install.php \
+	--default-user alice --db-type sqlite --db-base /var/www/FreshRSS/data/db.sqlite \
+	--auth-type form >/dev/null 2>&1 || true
+docker exec frss-caddy-test php /var/www/FreshRSS/cli/create-user.php \
+	--user alice --password dummy-password >/dev/null 2>&1 || true
+docker exec frss-caddy-test sh -c 'chown -R :www-data /var/www/FreshRSS/data; chmod -R g+rwX /var/www/FreshRSS/data'
+
+docker run -d --name frss-caddy --network "$NET" -p "${CADDY_PORT}:80" \
+	-v "${CADDY_TMP}/Caddyfile:/etc/caddy/Caddyfile:ro" "$CADDY_IMAGE" >/dev/null
+sleep 5
+CB="http://127.0.0.1:${CADDY_PORT}"
+
+if [ "$(docker inspect --format '{{.State.Running}}' frss-caddy 2>/dev/null || echo false)" != "true" ]; then
+	bad "Caddy starts with the shipped configuration" \
+		"$(docker logs frss-caddy 2>&1 | tail -1)" "a running Caddy"
+else
+	ok "Caddy starts with the shipped configuration"
+
+	# The whole point of the example: the prefix reaches Apache intact. `handle_path` would drop it.
+	is "the login page is served through Caddy" \
+		"$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: a.example' "${CB}${PREFIX}/i/?c=auth&a=login")" "200"
+	is "a bare /rss redirects to /rss/" \
+		"$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: a.example' "${CB}${PREFIX}")" "308"
+	is "other paths on the domain are not proxied" \
+		"$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: a.example' "${CB}/somewhere-else")" "404"
+	is "the second domain reaches the same instance" \
+		"$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: b.example' "${CB}${PREFIX}/i/?c=auth&a=login")" "200"
+
+	apache_paths=$(docker logs frss-caddy-test 2>&1 | grep -oE '"GET [^ ]*' | tail -20 || true)
+	has "Apache is asked for prefixed paths, not stripped ones" "$apache_paths" "\"GET ${PREFIX}/i/"
+	hasnt "…and never for the bare entry point" "$apache_paths" "\"GET /i/"
+
+	# A login that survives the round trip through a real proxy: the failure that a stripping proxy
+	# causes is a redirect back to the login page, forever.
+	cj="$(mktemp)"
+	chdr=(-H 'Host: a.example')
+	curl -s -c "$cj" -b "$cj" "${chdr[@]}" "${CB}${PREFIX}/i/?c=auth&a=login" -o "${CADDY_TMP}/login.html"
+	cnonce=$(curl -s -c "$cj" -b "$cj" "${chdr[@]}" \
+		"${CB}${PREFIX}/i/?c=javascript&a=nonce&user=alice" \
+		| sed -n 's/.*"nonce":"\([A-Za-z0-9]*\)".*/\1/p' | head -1)
+	ccsrf=$(sed -n 's/.*name="_csrf" value="\([a-f0-9]*\)".*/\1/p' "${CADDY_TMP}/login.html" | head -1)
+	cchal=$("${SCRIPT_DIR}/bcrypt-challenge.sh" frss-caddy-test alice dummy-password "$cnonce" 2>/dev/null | tail -1)
+	clogin=$(curl -s -b "$cj" -c "$cj" "${chdr[@]}" -o /dev/null -w '%{http_code}' \
+		-d "_csrf=$ccsrf" -d 'username=alice' -d "nonce=$cnonce" -d "challenge=$cchal" \
+		"${CB}${PREFIX}/i/?c=auth&a=login")
+	is "the login is accepted through Caddy" "$clogin" "302"
+	chome=$(curl -s -b "$cj" -c "$cj" "${chdr[@]}" "${CB}${PREFIX}/i/?rid=0000000000000000")
+	has "…and the session survives the round trip" "$chome" 'logged_in'
+	hasnt "…no bounce back to the login form" "$chome" 'name="challenge"'
+	rm -f "$cj"
+
+	docker rm -f frss-caddy frss-caddy-test >/dev/null 2>&1
+fi
+rm -rf "$CADDY_TMP" "$CADDY_DATA" 2>/dev/null || true
+docker rm -f frss-caddy frss-caddy-test >/dev/null 2>&1
+
+echo
 echo
 echo "== 5a. X-Forwarded-Prefix: a proxy that strips the prefix"
 # Some proxies (Caddy's `handle_path`, nginx `proxy_pass …/`) do remove the prefix before forwarding.

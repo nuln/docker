@@ -1,10 +1,11 @@
 # Caddy reverse proxy for FreshRSS served from a sub-directory, reachable through several domains.
 #
 # The path MUST reach Apache unchanged. Do NOT use `handle_path` / `uri strip_prefix` /
-# `stripprefix` here: mod_auth_openidc compares OIDCRedirectURI against the path Apache itself
-# serves, so a proxy that strips the prefix makes OIDC impossible, and FreshRSS would not be
-# able to recover the prefix for cookie paths and generated links. The container serves the
-# prefix through an Apache `Alias` (see entrypoint.sh), so nothing is lost by not stripping.
+# `strip_prefix` here: mod_auth_openidc compares OIDCRedirectURI against the path Apache itself
+# serves, so a proxy that strips the prefix makes OIDC impossible, and FreshRSS cannot recover
+# the prefix for cookie paths and generated links. The container serves the prefix through an
+# Apache `Alias` (see entrypoint.sh), so nothing is lost by not stripping — note `handle /rss/*`
+# below, which preserves the path, as opposed to `handle_path /rss/*`, which would remove it.
 #
 # Replace `a.example` / `b.example` with your own domains, and make sure `FRESHRSS_PATH_PREFIX`
 # on the FreshRSS container matches the prefix used below (/rss here).
@@ -12,16 +13,25 @@
 (common) {
 	encode zstd gzip
 
-	# Overwrite the forwarding headers. FreshRSS and mod_auth_openidc trust
-	# X-Forwarded-Host: never let a client-supplied value through.
-	header_up X-Forwarded-Host {host}
-	header_up X-Forwarded-Proto {scheme}
-	header_up X-Forwarded-Port {server_port}
+	# `handle`, not `handle_path`: the request path arrives at Apache as /rss/… unchanged.
+	handle /rss/* {
+		# Overwrite the forwarding headers, so a client cannot spoof them. Caddy already
+		# replaces these rather than passing a client's value through; stating them here
+		# documents the guarantee that FreshRSS and mod_auth_openidc rely on for building
+		# absolute URLs and matching the OIDC callback.
+		reverse_proxy freshrss:80 {
+			header_up X-Forwarded-Host {host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Port {server_port}
+		}
+	}
 
-	# The default prefix, so that a bare `/rss` reaches `/rss/` (the FreshRSS entry point).
+	# A bare `/rss` has to reach `/rss/`, which is the FreshRSS entry point.
 	redir /rss /rss/ 308
 
-	reverse_proxy freshrss:80
+	# This domain serves FreshRSS under /rss only. Drop this line to let everything else on the
+	# domain fall through to the site block below, e.g. to serve a static site at the root.
+	respond 404
 }
 
 a.example {

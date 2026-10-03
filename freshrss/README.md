@@ -237,15 +237,25 @@ Caddy (see `Caddyfile.example`):
 
 ```caddy
 (common) {
-	header_up X-Forwarded-Host   {host}
-	header_up X-Forwarded-Proto  {scheme}
+	encode zstd gzip
+	# `handle`, not `handle_path`: the request must reach Apache as /rss/… unchanged.
+	handle /rss/* {
+		reverse_proxy freshrss:80 {
+			header_up X-Forwarded-Host   {host}
+			header_up X-Forwarded-Proto  {scheme}
+			header_up X-Forwarded-Port   {server_port}
+		}
+	}
 	redir /rss /rss/ 308
-	reverse_proxy freshrss:80    # no handle_path, no strip_prefix
+	respond 404
 }
 
 a.example { import common }
 b.example { import common }
 ```
+
+`header_up` is an option *inside* `reverse_proxy`, not a directive of its own; written at the top
+level Caddy refuses to start with `unrecognized directive: header_up`.
 
 nginx:
 
