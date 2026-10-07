@@ -35,32 +35,40 @@ Switch with `CADDY_IMAGE` in `.env` (e.g. `ghcr.io/nuln/caddy:2.11.7-full`).
 The image is built automatically by CI (`.github/workflows/caddy.yml`) for multiple architectures (amd64/arm64) and pushed to:
 
 ```
-ghcr.io/nuln/caddy:2.11.7        # lean  (Dockerfile)
-ghcr.io/nuln/caddy:2.11.7-full   # full  (Dockerfile.full)
-ghcr.io/nuln/caddy:latest       # lean
-ghcr.io/nuln/caddy:full         # full
+ghcr.io/nuln/caddy:<version>        # lean  (Dockerfile)          — e.g. 2.11.7
+ghcr.io/nuln/caddy:<version>-full   # full  (Dockerfile.full)     — e.g. 2.11.7-full
+ghcr.io/nuln/caddy:latest           # lean
+ghcr.io/nuln/caddy:full             # full
 ```
 
-The version is pinned in `caddy/Dockerfile` (`ARG CADDY_VERSION=2.11.7`, not `latest`), and the workflow does **not** override it with a build-arg — an override is exactly what used to make the same commit build different binaries on different days. CI reads that one line back only to tag the image, and separately reports when upstream publishes something newer. To upgrade, edit `ARG CADDY_VERSION` in both `Dockerfile` and `Dockerfile.full`; CI fails if the two disagree.
+`<version>` tracks whatever Caddy stable was when CI ran, so the numeric tag and
+the binary inside always agree.
 
-`CADDY_VERSION` is re-declared inside the builder stage and passed to `xcaddy build v$CADDY_VERSION` — otherwise the ARG would only affect the final `FROM` and the compiled binary would silently be whatever xcaddy resolves as latest. To build locally:
+`CADDY_VERSION` defaults to `latest`, so a local build needs no arguments and picks up the current stable release. Pass it to pin a specific one:
 
 ```bash
-docker build -t ghcr.io/nuln/caddy:2.11.7 caddy
-docker build -f caddy/Dockerfile.full -t ghcr.io/nuln/caddy:2.11.7-full caddy
+# latest (default)
+docker build -t ghcr.io/nuln/caddy:local caddy
+
+# pinned
+docker build --build-arg CADDY_VERSION=2.11.7 -t ghcr.io/nuln/caddy:2.11.7 caddy
+docker build -f caddy/Dockerfile.full --build-arg CADDY_VERSION=2.11.7 -t ghcr.io/nuln/caddy:2.11.7-full caddy
 ```
+
+CI resolves the latest release once and passes it in as a build-arg, so the published tag always matches what is inside the image. The Dockerfile's `latest` default means a plain `docker build` is **not** reproducible across days — pass `--build-arg` when you need to rebuild a specific tag.
+
+`CADDY_VERSION` is re-declared inside the builder stage and handed to `xcaddy build`: an ARG declared before the first `FROM` is only in scope for `FROM` lines, so without the re-declaration the stage cannot see it and xcaddy falls back to its own `latest`. That mismatch is invisible — the image builds, it just contains a different Caddy than the base layer it was copied onto.
 
 ### Constraints
 
 - `nuln/caddy-plugins/alidns` requires Caddy **≥ 2.11.7**. Go module version
-  selection rejects an older `CADDY_VERSION` outright:
-  `requires github.com/caddyserver/caddy/v2@v2.11.7, not v2.11.4`. Raising the
-  floor is fine; lowering `CADDY_VERSION` requires relaxing that module's
-  `go.mod` first.
+  selection rejects an older one outright:
+  `requires github.com/caddyserver/caddy/v2@v2.11.7, not v2.11.4`. `latest` is
+  always new enough, but a pinned `CADDY_VERSION` below that floor fails at
+  `go get` unless the plugin's `go.mod` is relaxed.
 - The builder image is `caddy:builder`, which floats. That is deliberate: it
   tracks Go toolchain and xcaddy updates, and does not affect the Caddy version
-  being compiled — that comes from `xcaddy build v${CADDY_VERSION}` and is
-  pinned. Pinning the builder to `caddy:${CADDY_VERSION}-builder` is possible if
+  being compiled. Pinning it to `caddy:${CADDY_VERSION}-builder` is possible if
   a fully hermetic toolchain is ever needed.
 
 ## Usage

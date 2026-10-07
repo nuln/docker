@@ -13,47 +13,26 @@ permissions:
   packages: write
 
 jobs:
-  # The version is owned by the Dockerfile's ARG default. This job only reads it
-  # back so the image can be tagged; it deliberately does NOT pass it as a
-  # build-arg, because an override is exactly what used to make builds drift.
+  # The Dockerfiles default to CADDY_VERSION=latest, so a local build needs no
+  # arguments. CI resolves the current stable release once and passes it in, so
+  # the image is tagged with the version it actually contains.
   version:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.ver.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
-
-      - name: Read the version pinned in the Dockerfiles
+      - name: Resolve latest Caddy version
         id: ver
         run: |
           set -euo pipefail
-          for f in caddy/Dockerfile caddy/Dockerfile.full; do
-            V=$(sed -n 's/^ARG CADDY_VERSION=\(.*\)$/\1/p' "$f" | head -1)
-            [ -n "$V" ] || { echo "::error::no 'ARG CADDY_VERSION=<version>' in $f"; exit 1; }
-            echo "$f pins $V"
-          done
-          VERSION=$(sed -n 's/^ARG CADDY_VERSION=\(.*\)$/\1/p' caddy/Dockerfile | head -1)
-          OTHER=$(sed -n 's/^ARG CADDY_VERSION=\(.*\)$/\1/p' caddy/Dockerfile.full | head -1)
-          if [ "$VERSION" != "$OTHER" ]; then
-            echo "::error::Dockerfile pins $VERSION but Dockerfile.full pins $OTHER"
+          VERSION=$(curl -fsSL --max-time 30 https://api.github.com/repos/caddyserver/caddy/releases/latest \
+            | jq -r '.tag_name' | sed 's/^v//')
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            echo "::error::could not resolve the latest Caddy version"
             exit 1
           fi
+          echo "Building Caddy ${VERSION}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-
-      - name: Report whether upstream has moved on
-        # Informational only, deliberately non-fatal: it records that a bump is
-        # available without letting upstream trigger a rebuild on its own.
-        run: |
-          set -uo pipefail
-          PINNED="${{ steps.ver.outputs.version }}"
-          LATEST=$(curl -fsSL --max-time 20 https://api.github.com/repos/caddyserver/caddy/releases/latest \
-            | jq -r '.tag_name' | sed 's/^v//') || LATEST=""
-          if [ -n "$LATEST" ] && [ "$LATEST" != "$PINNED" ]; then
-            echo "::notice::Caddy ${LATEST} is released; this repo pins ${PINNED}."
-            echo "::notice::To upgrade, edit ARG CADDY_VERSION in caddy/Dockerfile and Dockerfile.full."
-          else
-            echo "Pinned version is current (${PINNED})."
-          fi
 
   build:
     needs: version
@@ -95,9 +74,10 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           provenance: false
-          # No CADDY_VERSION build-arg on purpose: the Dockerfile's own ARG
-          # default is the pinned version, and passing it again is what let this
-          # workflow silently build a different Caddy than the source declared.
+          # Resolved above, so the image tag matches what was actually compiled
+          # even though the Dockerfile default is `latest`.
+          build-args: |
+            CADDY_VERSION=${{ needs.version.outputs.version }}
           labels: |
             org.opencontainers.image.version=${{ needs.version.outputs.version }}
           tags: |

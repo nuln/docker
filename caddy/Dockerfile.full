@@ -1,19 +1,25 @@
 # 完整版（:full）：在 Dockerfile 基础上追加可选插件
 #
-# 版本处理与 Dockerfile 一致：CADDY_VERSION 必须同时作用于 builder 阶段和
-# 最终基础镜像，否则编译产物与镜像 tag 会脱钩。
-ARG CADDY_VERSION=2.11.7
+# CADDY_VERSION 语义与 Dockerfile 完全一致：默认 latest，可由 --build-arg 覆盖。
+ARG CADDY_VERSION=latest
 
 FROM caddy:builder AS builder
 ARG CADDY_VERSION
-RUN xcaddy build v${CADDY_VERSION} \
-  --with github.com/caddy-dns/cloudflare \
-  --with github.com/nuln/caddy-plugins/alidns@v0.0.1 \
-  --with github.com/mholt/caddy-l4 \
-  --with github.com/mholt/caddy-dynamicdns \
-  --with github.com/mholt/caddy-webdav \
-  --with github.com/abiosoft/caddy-exec \
-  --with github.com/WingLim/caddy-webhook
+# xcaddy 要的是 git ref：字面量 latest，或 v<version>。
+RUN set -eux; \
+    if [ "${CADDY_VERSION}" = "latest" ]; then \
+      ref=latest; \
+    else \
+      ref="v${CADDY_VERSION}"; \
+    fi; \
+    xcaddy build "${ref}" \
+      --with github.com/caddy-dns/cloudflare \
+      --with github.com/nuln/caddy-plugins/alidns@v0.0.1 \
+      --with github.com/mholt/caddy-l4 \
+      --with github.com/mholt/caddy-dynamicdns \
+      --with github.com/mholt/caddy-webdav \
+      --with github.com/abiosoft/caddy-exec \
+      --with github.com/WingLim/caddy-webhook
 
 FROM caddy:${CADDY_VERSION}
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
