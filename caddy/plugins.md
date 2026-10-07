@@ -522,7 +522,7 @@ go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 # 阿里云插件来自自有仓库 nuln/caddy-plugins，按 alidns/v* tag 独立发版
 xcaddy build v2.11.7 \
   --with github.com/caddy-dns/cloudflare \
-  --with github.com/nuln/caddy-plugins/alidns@v1.0.0 \
+  --with github.com/nuln/caddy-plugins/alidns@v0.0.1 \
   --with github.com/mholt/caddy-l4 \
   --with github.com/mholt/caddy-dynamicdns
 ```

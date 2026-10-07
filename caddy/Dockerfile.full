@@ -8,7 +8,7 @@ FROM caddy:builder AS builder
 ARG CADDY_VERSION
 RUN xcaddy build v${CADDY_VERSION} \
   --with github.com/caddy-dns/cloudflare \
-  --with github.com/nuln/caddy-plugins/alidns@v1.0.0 \
+  --with github.com/nuln/caddy-plugins/alidns@v0.0.1 \
   --with github.com/mholt/caddy-l4 \
   --with github.com/mholt/caddy-dynamicdns \
   --with github.com/mholt/caddy-webdav \
