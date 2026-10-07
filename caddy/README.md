@@ -41,7 +41,9 @@ ghcr.io/nuln/caddy:latest       # lean
 ghcr.io/nuln/caddy:full         # full
 ```
 
-The version is pinned in `caddy/Dockerfile` (`ARG CADDY_VERSION`, not `latest`) so builds are reproducible; bump it deliberately for a new Caddy release. `CADDY_VERSION` is re-declared inside the builder stage and passed to `xcaddy build v$CADDY_VERSION` — otherwise the ARG would only affect the final `FROM` and the compiled binary would silently be whatever xcaddy resolves as latest. To build locally:
+The version is pinned in `caddy/Dockerfile` (`ARG CADDY_VERSION=2.11.7`, not `latest`), and the workflow does **not** override it with a build-arg — an override is exactly what used to make the same commit build different binaries on different days. CI reads that one line back only to tag the image, and separately reports when upstream publishes something newer. To upgrade, edit `ARG CADDY_VERSION` in both `Dockerfile` and `Dockerfile.full`; CI fails if the two disagree.
+
+`CADDY_VERSION` is re-declared inside the builder stage and passed to `xcaddy build v$CADDY_VERSION` — otherwise the ARG would only affect the final `FROM` and the compiled binary would silently be whatever xcaddy resolves as latest. To build locally:
 
 ```bash
 docker build -t ghcr.io/nuln/caddy:2.11.7 caddy
@@ -55,10 +57,11 @@ docker build -f caddy/Dockerfile.full -t ghcr.io/nuln/caddy:2.11.7-full caddy
   `requires github.com/caddyserver/caddy/v2@v2.11.7, not v2.11.4`. Raising the
   floor is fine; lowering `CADDY_VERSION` requires relaxing that module's
   `go.mod` first.
-- The builder image `caddy:builder` still floats, so the Go toolchain used to
-  compile is not pinned even though the Caddy source version is. Pin it to
-  `caddy:${CADDY_VERSION}-builder` if bit-for-bit reproducibility matters more
-  than picking up builder fixes.
+- The builder image is `caddy:builder`, which floats. That is deliberate: it
+  tracks Go toolchain and xcaddy updates, and does not affect the Caddy version
+  being compiled — that comes from `xcaddy build v${CADDY_VERSION}` and is
+  pinned. Pinning the builder to `caddy:${CADDY_VERSION}-builder` is possible if
+  a fully hermetic toolchain is ever needed.
 
 ## Usage
 
