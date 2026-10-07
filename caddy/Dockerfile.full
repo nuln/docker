@@ -1,9 +1,14 @@
 # 完整版（:full）：在 Dockerfile 基础上追加可选插件
-ARG CADDY_VERSION=2.11.4
+#
+# 版本处理与 Dockerfile 一致：CADDY_VERSION 必须同时作用于 builder 阶段和
+# 最终基础镜像，否则编译产物与镜像 tag 会脱钩。
+ARG CADDY_VERSION=2.11.7
+
 FROM caddy:builder AS builder
-RUN xcaddy build \
+ARG CADDY_VERSION
+RUN xcaddy build v${CADDY_VERSION} \
   --with github.com/caddy-dns/cloudflare \
-  --with github.com/caddy-dns/alidns \
+  --with github.com/nuln/caddy-plugins/alidns@v1.0.0 \
   --with github.com/mholt/caddy-l4 \
   --with github.com/mholt/caddy-dynamicdns \
   --with github.com/mholt/caddy-webdav \

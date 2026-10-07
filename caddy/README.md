@@ -18,7 +18,7 @@ A custom Caddy image that compiles a small, curated plugin set via `xcaddy` on t
 | `caddy-l4` | L4 / UDP SNI forwarding (e.g. forward `udp/:443` to hysteria) |
 | `caddy-dynamicdns` | Keeps DNS records in sync with the public IP (DDNS for dynamic-IP hosts) |
 | `caddy-dns/cloudflare` | ACME DNS-01 challenge, cert requests via Cloudflare DNS (no 80 port needed, supports wildcards) |
-| `caddy-dns/alidns` | ACME DNS-01 challenge via Alibaba Cloud DNS |
+| `nuln/caddy-plugins/alidns` | ACME DNS-01 via Alibaba Cloud — both 云解析 DNS (`alidns`) and 边缘安全加速 ESA (`esa`). Fork of `caddy-dns/alidns`, MIT © 2020 Yu Zhu |
 
 ## Extra plugins (`:full` only)
 
@@ -28,25 +28,37 @@ A custom Caddy image that compiles a small, curated plugin set via `xcaddy` on t
 | `caddy-exec` | Run shell commands from a handler / config |
 | `caddy-webhook` | Webhook receiver handler |
 
-Switch with `CADDY_IMAGE` in `.env` (e.g. `ghcr.io/nuln/caddy:2.11.4-full`).
+Switch with `CADDY_IMAGE` in `.env` (e.g. `ghcr.io/nuln/caddy:2.11.7-full`).
 
 ## Build
 
 The image is built automatically by CI (`.github/workflows/caddy.yml`) for multiple architectures (amd64/arm64) and pushed to:
 
 ```
-ghcr.io/nuln/caddy:2.11.4        # lean  (Dockerfile)
-ghcr.io/nuln/caddy:2.11.4-full   # full  (Dockerfile.full)
+ghcr.io/nuln/caddy:2.11.7        # lean  (Dockerfile)
+ghcr.io/nuln/caddy:2.11.7-full   # full  (Dockerfile.full)
 ghcr.io/nuln/caddy:latest       # lean
 ghcr.io/nuln/caddy:full         # full
 ```
 
-The version is pinned in `caddy/Dockerfile` (`ARG CADDY_VERSION`, not `latest`) so builds are reproducible; bump it deliberately for a new Caddy release. To build locally:
+The version is pinned in `caddy/Dockerfile` (`ARG CADDY_VERSION`, not `latest`) so builds are reproducible; bump it deliberately for a new Caddy release. `CADDY_VERSION` is re-declared inside the builder stage and passed to `xcaddy build v$CADDY_VERSION` — otherwise the ARG would only affect the final `FROM` and the compiled binary would silently be whatever xcaddy resolves as latest. To build locally:
 
 ```bash
-docker build -t ghcr.io/nuln/caddy:2.11.4 caddy
-docker build -f caddy/Dockerfile.full -t ghcr.io/nuln/caddy:2.11.4-full caddy
+docker build -t ghcr.io/nuln/caddy:2.11.7 caddy
+docker build -f caddy/Dockerfile.full -t ghcr.io/nuln/caddy:2.11.7-full caddy
 ```
+
+### Constraints
+
+- `nuln/caddy-plugins/alidns` requires Caddy **≥ 2.11.7**. Go module version
+  selection rejects an older `CADDY_VERSION` outright:
+  `requires github.com/caddyserver/caddy/v2@v2.11.7, not v2.11.4`. Raising the
+  floor is fine; lowering `CADDY_VERSION` requires relaxing that module's
+  `go.mod` first.
+- The builder image `caddy:builder` still floats, so the Go toolchain used to
+  compile is not pinned even though the Caddy source version is. Pin it to
+  `caddy:${CADDY_VERSION}-builder` if bit-for-bit reproducibility matters more
+  than picking up builder fixes.
 
 ## Usage
 
