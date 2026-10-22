@@ -1,5 +1,5 @@
 diff --git a/app/Controllers/authController.php b/app/Controllers/authController.php
-index e5afda7..e257b64 100644
+index c5a1b6ea..8c716c32 100644
 --- a/app/Controllers/authController.php
 +++ b/app/Controllers/authController.php
 @@ -108,6 +108,10 @@ class FreshRSS_auth_Controller extends FreshRSS_ActionController {
@@ -11,9 +11,9 @@ index e5afda7..e257b64 100644
 +		// leaving a form that renders and silently does nothing.
 +		FreshRSS_View::appendScript(Minz_Url::display('/scripts/login-watchdog.js?' . @filemtime(PUBLIC_PATH . '/scripts/login-watchdog.js')));
  		FreshRSS_View::appendScript(Minz_Url::display('/scripts/vendor/bcrypt.js?' . @filemtime(PUBLIC_PATH . '/scripts/vendor/bcrypt.js')));
+ 		$this->view->auth_autofills = FreshRSS_FormAuth::getAutofilledFields();
  
- 		$limits = FreshRSS_Context::systemConf()->limits;
-@@ -220,6 +224,10 @@ class FreshRSS_auth_Controller extends FreshRSS_ActionController {
+@@ -238,6 +242,10 @@ class FreshRSS_auth_Controller extends FreshRSS_ActionController {
  			}
  		}
  		FreshRSS_View::prependTitle(_t('gen.auth.reauth.title') . ' · ');
@@ -22,13 +22,13 @@ index e5afda7..e257b64 100644
 +		// leaving a form that renders and silently does nothing.
 +		FreshRSS_View::appendScript(Minz_Url::display('/scripts/login-watchdog.js?' . @filemtime(PUBLIC_PATH . '/scripts/login-watchdog.js')));
  		FreshRSS_View::appendScript(Minz_Url::display('/scripts/vendor/bcrypt.js?' . @filemtime(PUBLIC_PATH . '/scripts/vendor/bcrypt.js')));
+ 		$this->view->auth_autofills = FreshRSS_FormAuth::getAutofilledFields();
  	}
- 
 diff --git a/app/Models/Feed.php b/app/Models/Feed.php
-index d159ee5..0d5d1d8 100644
+index f0045666..b7fe4ab3 100644
 --- a/app/Models/Feed.php
 +++ b/app/Models/Feed.php
-@@ -1399,7 +1399,9 @@ class FreshRSS_Feed extends Minz_Model {
+@@ -1423,7 +1423,9 @@ class FreshRSS_Feed extends Minz_Model {
  
  	public function pubSubHubbubPrepare(): string|false {
  		$key = '';
@@ -39,7 +39,7 @@ index d159ee5..0d5d1d8 100644
  		// If they have the same host, they can reach each other (e.g., localhost to localhost)
  		if ((Minz_Request::serverIsPublic($baseUrl) || self::isSameHost($this->hubUrl, $baseUrl)) &&
  			$this->hubUrl !== '' && $this->selfUrl !== '' && @is_dir(PSHB_PATH)) {
-@@ -1463,7 +1465,7 @@ class FreshRSS_Feed extends Minz_Model {
+@@ -1487,7 +1489,7 @@ class FreshRSS_Feed extends Minz_Model {
  		} else {
  			$url = $this->url;	//Always use current URL during unsubscribe
  		}
@@ -48,7 +48,7 @@ index d159ee5..0d5d1d8 100644
  		// If they have the same host, they can reach each other (e.g., localhost to localhost)
  		if ($url !== '' && (Minz_Request::serverIsPublic($baseUrl) || self::isSameHost($url, $baseUrl) || !$state)) {
  			$hubFilename = PSHB_PATH . '/feeds/' . sha1($url) . '/!hub.json';
-@@ -1478,7 +1480,7 @@ class FreshRSS_Feed extends Minz_Model {
+@@ -1502,7 +1504,7 @@ class FreshRSS_Feed extends Minz_Model {
  				Minz_Log::warning('Invalid JSON for WebSub: ' . $this->url);
  				return false;
  			}
@@ -58,7 +58,7 @@ index d159ee5..0d5d1d8 100644
  				Minz_Log::warning('Invalid callback for WebSub: ' . $this->url);
  				return false;
 diff --git a/app/Models/SystemConfiguration.php b/app/Models/SystemConfiguration.php
-index a82a0da..e1cdde3 100644
+index a82a0da7..e1cdde34 100644
 --- a/app/Models/SystemConfiguration.php
 +++ b/app/Models/SystemConfiguration.php
 @@ -26,6 +26,9 @@ declare(strict_types=1);
@@ -72,7 +72,7 @@ index a82a0da..e1cdde3 100644
   * @property-read bool $simplepie_syslog_enabled
   * @property-read bool $suppress_csp_warning
 diff --git a/app/i18n/en/admin.php b/app/i18n/en/admin.php
-index 0d2a3dd..e2a7c87 100644
+index 0d2a3dd5..e2a7c87a 100644
 --- a/app/i18n/en/admin.php
 +++ b/app/i18n/en/admin.php
 @@ -81,6 +81,7 @@ return array(
@@ -95,7 +95,7 @@ index 0d2a3dd..e2a7c87 100644
  			'help' => 'About <a href="https://freshrss.github.io/FreshRSS/en/users/WebSub.html" target="_blank">WebSub</a>',
  		),
 diff --git a/app/install.php b/app/install.php
-index 1a104a4..019e278 100644
+index ee9b28ef..db5f35f5 100644
 --- a/app/install.php
 +++ b/app/install.php
 @@ -126,8 +126,19 @@ function saveStep2(): void {
@@ -129,7 +129,7 @@ index 1a104a4..019e278 100644
  		<meta name="apple-mobile-web-app-status-bar-style" content="black" />
  		<meta name="apple-mobile-web-app-title" content="FreshRSS">
 diff --git a/app/layout/layout.phtml b/app/layout/layout.phtml
-index aea36e7..eb32f35 100644
+index aea36e75..eb32f35f 100644
 --- a/app/layout/layout.phtml
 +++ b/app/layout/layout.phtml
 @@ -39,6 +39,7 @@
@@ -141,7 +141,7 @@ index aea36e7..eb32f35 100644
  		<meta name="apple-mobile-web-app-status-bar-style" content="black" />
  		<meta name="apple-mobile-web-app-title" content="<?= FreshRSS_Context::systemConf()->title ?>">
 diff --git a/app/views/configure/privacy.phtml b/app/views/configure/privacy.phtml
-index 1c03cf1..fc0abf0 100644
+index 1c03cf16..fc0abf0c 100644
 --- a/app/views/configure/privacy.phtml
 +++ b/app/views/configure/privacy.phtml
 @@ -2,11 +2,13 @@
@@ -163,7 +163,7 @@ index 1c03cf1..fc0abf0 100644
  ?>
  
 diff --git a/app/views/configure/system.phtml b/app/views/configure/system.phtml
-index 5b6c4dd..03edd6f 100644
+index 5b6c4dd5..03edd6f4 100644
 --- a/app/views/configure/system.phtml
 +++ b/app/views/configure/system.phtml
 @@ -20,16 +20,25 @@
@@ -195,7 +195,7 @@ index 5b6c4dd..03edd6f 100644
  					<p class="help"><?= _i('help') ?> <?= _t('admin.system.sensitive-parameter') ?></p>
  			</div>
 diff --git a/app/views/helpers/javascript_vars.phtml b/app/views/helpers/javascript_vars.phtml
-index 822d101..b1ba86f 100644
+index 822d1011..b1ba86f5 100644
 --- a/app/views/helpers/javascript_vars.phtml
 +++ b/app/views/helpers/javascript_vars.phtml
 @@ -9,7 +9,16 @@ echo json_encode([
@@ -217,7 +217,7 @@ index 822d101..b1ba86f 100644
  		'hide_posts' => !(FreshRSS_Context::userConf()->display_posts || Minz_Request::actionName() === 'reader'),
  		'display_order' => Minz_Request::paramString('order') ?: FreshRSS_Context::userConf()->sort_order,
 diff --git a/cli/do-install.php b/cli/do-install.php
-index 63ba333..03e85d7 100755
+index e2ce250c..0394a5b9 100755
 --- a/cli/do-install.php
 +++ b/cli/do-install.php
 @@ -11,6 +11,7 @@ $cliOptions = new class extends CliOptionsParser {
@@ -271,7 +271,7 @@ index 63ba333..03e85d7 100755
  }
  
 diff --git a/cli/reconfigure.php b/cli/reconfigure.php
-index d2568a9..7ce591c 100755
+index d2568a92..7ce591c7 100755
 --- a/cli/reconfigure.php
 +++ b/cli/reconfigure.php
 @@ -7,6 +7,7 @@ $cliOptions = new class extends CliOptionsParser {
@@ -299,7 +299,7 @@ index d2568a9..7ce591c 100755
  	'title' => $cliOptions->title ?? null,
  	'allow_anonymous' => $cliOptions->allowAnonymous ?? null,
 diff --git a/config.default.php b/config.default.php
-index a7dae10..6a303f5 100644
+index 1a05bcdc..31e95643 100644
 --- a/config.default.php
 +++ b/config.default.php
 @@ -18,13 +18,37 @@ return [
@@ -346,7 +346,7 @@ index a7dae10..6a303f5 100644
  	'auto_update_url' => 'https://update.freshrss.org',
  
 diff --git a/lib/Minz/ActionController.php b/lib/Minz/ActionController.php
-index 9f9fa46..08b2a09 100644
+index e2fd6df8..79e4e596 100644
 --- a/lib/Minz/ActionController.php
 +++ b/lib/Minz/ActionController.php
 @@ -102,14 +102,24 @@ abstract class Minz_ActionController {
@@ -380,7 +380,7 @@ index 9f9fa46..08b2a09 100644
  
  	/**
 diff --git a/lib/Minz/Configuration.php b/lib/Minz/Configuration.php
-index 9304599..e18d7bc 100644
+index 93045996..e18d7bc2 100644
 --- a/lib/Minz/Configuration.php
 +++ b/lib/Minz/Configuration.php
 @@ -3,7 +3,9 @@ declare(strict_types=1);
@@ -394,10 +394,10 @@ index 9304599..e18d7bc 100644
   *  connection_uri_params:string,pdo_options:array<int,int|string|bool>} $db
   * @property bool $disable_update
 diff --git a/lib/Minz/Request.php b/lib/Minz/Request.php
-index 12b3051..1da4556 100644
+index c671baba..333dbe8d 100644
 --- a/lib/Minz/Request.php
 +++ b/lib/Minz/Request.php
-@@ -294,18 +294,88 @@ class Minz_Request {
+@@ -309,18 +309,88 @@ class Minz_Request {
  	}
  
  	/**
@@ -419,11 +419,8 @@ index 12b3051..1da4556 100644
  		$protocol = self::extractProtocol();
  		$host = self::extractHost();
  		$port = self::extractPortForUrl();
--		$prefix = self::extractPrefix();
--		$path = self::extractPath();
 +		$path = self::applicationPath();
- 
--		return filter_var("{$protocol}://{$host}{$port}{$prefix}{$path}", FILTER_SANITIZE_URL) ?: '';
++
 +		return filter_var("{$protocol}://{$host}{$port}{$path}", FILTER_SANITIZE_URL) ?: '';
 +	}
 +
@@ -451,12 +448,14 @@ index 12b3051..1da4556 100644
 +			$configured = '/' . trim($configured, '/');
 +			return $configured === '/' ? '' : $configured;
 +		}
-+		$prefix = self::extractPrefix();
+ 		$prefix = self::extractPrefix();
+-		$path = self::extractPath();
 +		if ($prefix !== '') {
 +			// The proxy stripped the prefix: trust the advertised one.
 +			return '/' . trim($prefix, '/');
 +		}
-+
+ 
+-		return filter_var("{$protocol}://{$host}{$port}{$prefix}{$path}", FILTER_SANITIZE_URL) ?: '';
 +		$scriptName = is_string($_SERVER['SCRIPT_NAME'] ?? null) ? $_SERVER['SCRIPT_NAME'] : '';
 +		if ($scriptName === '') {
 +			return '';
@@ -491,7 +490,7 @@ index 12b3051..1da4556 100644
  	}
  
  	private static function extractProtocol(): string {
-@@ -314,19 +384,51 @@ class Minz_Request {
+@@ -329,19 +399,51 @@ class Minz_Request {
  
  	private static function extractHost(): string {
  		$host = is_string($_SERVER['HTTP_X_FORWARDED_HOST'] ?? null) ? $_SERVER['HTTP_X_FORWARDED_HOST'] : '';
@@ -499,15 +498,17 @@ index 12b3051..1da4556 100644
 -			return parse_url("http://{$host}", PHP_URL_HOST) ?: 'localhost';
 +		if ($host === '') {
 +			$host = is_string($_SERVER['HTTP_HOST'] ?? null) ? $_SERVER['HTTP_HOST'] : '';
-+		}
-+		if ($host === '') {
-+			$host = is_string($_SERVER['SERVER_NAME'] ?? null) ? $_SERVER['SERVER_NAME'] : '';
-+			return $host === '' ? 'localhost' : $host;
  		}
 -		$host = is_string($_SERVER['HTTP_HOST'] ?? null) ? $_SERVER['HTTP_HOST'] : '';
 -		if ($host !== '') {
 -			// Might contain a port number, and mind IPv6 addresses
 -			return parse_url("http://{$host}", PHP_URL_HOST) ?: 'localhost';
++		if ($host === '') {
++			$host = is_string($_SERVER['SERVER_NAME'] ?? null) ? $_SERVER['SERVER_NAME'] : '';
++			return $host === '' ? 'localhost' : $host;
+ 		}
+-		$host = is_string($_SERVER['SERVER_NAME'] ?? null) ? $_SERVER['SERVER_NAME'] : '';
+-		if ($host !== '') {
 +		// Might contain a port number, and mind IPv6 addresses
 +		$host = parse_url("http://{$host}", PHP_URL_HOST) ?: 'localhost';
 +		return self::checkAllowedHost($host);
@@ -526,14 +527,12 @@ index 12b3051..1da4556 100644
 +			$conf = Minz_Configuration::get('system');
 +			$allowed = $conf->allowed_hosts;
 +		} catch (Minz_ConfigurationException) {
-+			return $host;
- 		}
--		$host = is_string($_SERVER['SERVER_NAME'] ?? null) ? $_SERVER['SERVER_NAME'] : '';
--		if ($host !== '') {
-+		if (!is_array($allowed) || $allowed === []) {
  			return $host;
  		}
 -		return 'localhost';
++		if (!is_array($allowed) || $allowed === []) {
++			return $host;
++		}
 +		$hosts = [];
 +		foreach ($allowed as $value) {
 +			if (!is_string($value)) {
@@ -552,7 +551,7 @@ index 12b3051..1da4556 100644
  	}
  
  	private static function extractPort(): int {
-@@ -363,25 +465,70 @@ class Minz_Request {
+@@ -378,25 +480,70 @@ class Minz_Request {
  		return '';
  	}
  
@@ -634,10 +633,10 @@ index 12b3051..1da4556 100644
  	 * Resolve a hostname to its first found IP address (IPv4 or IPv6).
  	 *
 diff --git a/lib/Minz/Session.php b/lib/Minz/Session.php
-index 5251e31..f265b95 100644
+index 42c4bbeb..623df033 100644
 --- a/lib/Minz/Session.php
 +++ b/lib/Minz/Session.php
-@@ -46,7 +46,11 @@ class Minz_Session {
+@@ -45,7 +45,11 @@ class Minz_Session {
  		$params = session_get_cookie_params();
  		// Sanitize lifetime of session cookies from PHP ini `session.cookie_lifetime` (default 0)
  		$params['lifetime'] = ($params['lifetime'] <= 0 || $params['lifetime'] > 86400) ? 0 : $params['lifetime'];
@@ -651,7 +650,7 @@ index 5251e31..f265b95 100644
  		$params['secure'] = Minz_Request::isHttps();
  		$params['httponly'] = true;
 diff --git a/lib/Minz/Url.php b/lib/Minz/Url.php
-index bedb094..89806fc 100644
+index 5dcf70bb..4dcb9c67 100644
 --- a/lib/Minz/Url.php
 +++ b/lib/Minz/Url.php
 @@ -33,11 +33,10 @@ class Minz_Url {
@@ -670,7 +669,7 @@ index bedb094..89806fc 100644
  			if ($isArray) {
  				$url_string .= PUBLIC_TO_INDEX_PATH;
 diff --git a/p/api/pshb.php b/p/api/pshb.php
-index 4eaaf4c..4a1c083 100644
+index 4eaaf4cc..4a1c0834 100644
 --- a/p/api/pshb.php
 +++ b/p/api/pshb.php
 @@ -67,6 +67,17 @@ if (empty($users)) {
@@ -692,7 +691,7 @@ index 4eaaf4c..4a1c083 100644
  	$leaseSeconds = empty($_REQUEST['hub_lease_seconds']) || !is_numeric($_REQUEST['hub_lease_seconds']) ? 0 : (int)$_REQUEST['hub_lease_seconds'];
  	if ($leaseSeconds > 60) {
 diff --git a/p/scripts/extra.js b/p/scripts/extra.js
-index 6bb0c67..a42e9b8 100644
+index fe63eef7..4cbdc06b 100644
 --- a/p/scripts/extra.js
 +++ b/p/scripts/extra.js
 @@ -16,14 +16,25 @@ function forgetOpenCategories() {
@@ -722,7 +721,7 @@ index 6bb0c67..a42e9b8 100644
  			console.log('FreshRSS waiting for bcrypt.js…');
  		}
  		setTimeout(init_crypto_forms, 100);
-@@ -633,9 +644,17 @@ function init_enable_notify_button() {
+@@ -634,9 +645,17 @@ function init_enable_notify_button() {
  	});
  }
  
@@ -743,7 +742,7 @@ index 6bb0c67..a42e9b8 100644
  		setTimeout(init_extra_afterDOM, 50);
 diff --git a/p/scripts/login-watchdog.js b/p/scripts/login-watchdog.js
 new file mode 100644
-index 0000000..ea54395
+index 00000000..ea543952
 --- /dev/null
 +++ b/p/scripts/login-watchdog.js
 @@ -0,0 +1,79 @@
@@ -829,7 +828,7 @@ index 0000000..ea54395
 \ No newline at end of file
 diff --git a/tests/lib/Minz/RequestTest.php b/tests/lib/Minz/RequestTest.php
 new file mode 100644
-index 0000000..b65c340
+index 00000000..b65c3401
 --- /dev/null
 +++ b/tests/lib/Minz/RequestTest.php
 @@ -0,0 +1,243 @@
@@ -1078,7 +1077,7 @@ index 0000000..b65c340
 +}
 diff --git a/tests/lib/Minz/UrlTest.php b/tests/lib/Minz/UrlTest.php
 new file mode 100644
-index 0000000..103d08b
+index 00000000..103d08bd
 --- /dev/null
 +++ b/tests/lib/Minz/UrlTest.php
 @@ -0,0 +1,249 @@

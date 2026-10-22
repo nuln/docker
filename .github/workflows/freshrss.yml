@@ -26,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       ref: ${{ steps.ref.outputs.ref }}
+      apt_refresh: ${{ steps.ref.outputs.apt_refresh }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -44,6 +45,39 @@ jobs:
           fi
           echo "Building FreshRSS at ${REF}"
           echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+          echo "apt_refresh=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+  # A rebuild that changes nothing else still has to run regularly: the distribution ships PHP (and
+  # other) security fixes continuously, and the running image keeps whatever was current on the day
+  # its apt layer ran — CVE-2026-109618/9 in PHP is exactly that case. This job fails when the few
+  # published tags are more than 35 days old, so a stale image is visible in the Actions tab instead
+  # of only when someone remembers. It never blocks the build: the image is still worth shipping.
+  freshness:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Warn when the published image has not been rebuilt recently
+        run: |
+          set -euo pipefail
+          created=$(curl -fsSL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/users/${{ github.repository_owner }}/packages/container/freshrss/versions?per_page=100" \
+            | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          for v in reversed(data):            # oldest first
+              if "latest" in v["metadata"]["container"]["tags"]:
+                  print(v["updated_at"]); break
+          ' 2>/dev/null || true)
+          if [ -z "${created}" ]; then
+            echo "::notice::Could not read the package metadata; skipping the freshness check."
+            exit 0
+          fi
+          age=$(( ( $(date -u +%s) - $(date -u -d "${created}" +%s) ) / 86400 ))
+          echo "latest was rebuilt ${age} day(s) ago (${created})"
+          if [ "${age}" -gt 35 ]; then
+            echo "::warning::ghcr.io/nuln/freshrss:latest is ${age} days old. Rebuild it (workflow_dispatch with the same ref) to pick up PHP and other Debian security updates."
+          fi
 
   # The patch must apply to the pinned upstream tree, and the patched code must satisfy
   # upstream's own quality gates (phpcs + PHPStan level 10 + the whole PHPUnit suite).
@@ -166,6 +200,10 @@ jobs:
             ghcr.io/nuln/freshrss:${{ steps.ver.outputs.version }}
           build-args: |
             FRESHRSS_REF=${{ needs.version.outputs.ref }}
+            # Required by the Dockerfile: keys the apt layer to the day of the build, so a cached
+            # layer can never keep an old, vulnerable PHP (CVE-2026-109618/9). The image records it
+            # in a label, and the build fails outright if the resulting PHP is older than 8.4.27.
+            DEBIAN_APT_REFRESH=${{ needs.version.outputs.apt_refresh }}
           labels: |
             org.opencontainers.image.version=${{ steps.ver.outputs.version }}
             org.opencontainers.image.revision=${{ needs.version.outputs.ref }}
@@ -209,6 +247,22 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
           docker pull ${{ matrix.image }}
           docker image inspect ${{ matrix.image }} --format '{{.Os}}/{{.Architecture}}'
+
+      # The Dockerfile already refuses to build an image with a vulnerable PHP, but "the build
+      # checked it" and "the published image has it" are two different claims: a cache hit, a
+      # retagged manifest or a pulled tag from an older run would ship the old one while the build
+      # log looked fine. Assert the property on the artefact that is actually deployed.
+      - name: The published image ships a PHP without CVE-2026-109618/9
+        run: |
+          set -euo pipefail
+          v=$(docker run --rm --entrypoint php ${{ matrix.image }} -r 'echo PHP_VERSION;')
+          echo "PHP ${v}"
+          php -r 'exit(version_compare($argv[1], "8.4.27", ">=") ? 0 : 1);' "${v}" || {
+            echo "::error::${{ matrix.image }} ships PHP ${v}: vulnerable to CVE-2026-109618/9."
+            exit 1
+          }
+          docker image inspect ${{ matrix.image }} \
+            --format 'apt layer refreshed: {{index .Config.Labels "nuln.base.apt-refresh"}}'
 
       # Sections 5a4 and 5a6 of the integration suite drive a real browser, so Playwright has to be
       # in place before it starts rather than only before the browser suite.

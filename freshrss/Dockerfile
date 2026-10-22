@@ -26,21 +26,47 @@ ENV TZ=UTC
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 ARG DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && \
+#
+# The distribution packages are a *moving target*, and a cached apt layer freezes them forever.
+# That is not a theoretical concern: CVE-2026-109618/9 are pre-auth RCEs in PHP itself, Debian
+# shipped the fix as php8.4 8.4.27-1~deb13u1 on 2026-10-21, and an image rebuilt a day later with
+# the same Dockerfile still contained 8.4.26 — BuildKit had reused the `apt-get install` layer,
+# whose cache key is the command text, not the repository contents. The vulnerable build looked
+# perfectly up to date (`git log` showed the new FreshRSS ref, the patch applied, every test green).
+#
+# So the apt layer is deliberately keyed to a caller-supplied *date*, not to the command. Set it to
+# the day of the rebuild (`docker build --build-arg DEBIAN_APT_REFRESH=$(date -u +%Y-%m-%d)`); the
+# build below refuses to run without a value, because silently reusing yesterday's packages is the
+# failure mode this exists to prevent. It also matches the Debian snapshot convention of caching
+# by date, and costs nothing when the layer is genuinely fresh.
+ARG DEBIAN_APT_REFRESH
+RUN if [ -z "${DEBIAN_APT_REFRESH}" ]; then \
+		echo 'ERROR: pass --build-arg DEBIAN_APT_REFRESH=$(date -u +%Y-%m-%d) so this image' >&2; \
+		echo '       gets the current Debian packages (PHP security updates included).' >&2; \
+		exit 1; \
+	fi && \
+	apt-get update && \
 	apt-get install --no-install-recommends -y \
 	ca-certificates cron git patch nodejs \
 	apache2 libapache2-mod-php \
 	libapache2-mod-auth-openidc \
 	php-curl php-gmp php-intl php-mbstring php-xml php-zip \
 	php-sqlite3 php-mysql php-pgsql && \
-	rm -rf /var/lib/apt/lists/*
+	rm -rf /var/lib/apt/lists/* && \
+	# Fail the build when the base distribution still ships a PHP older than the one that fixed
+	# CVE-2026-109618/9. Only relevant while the base image is Debian 13 (`trixie`). Single-line on
+	# purpose: a Dockerfile has no line continuation inside a quoted string.
+	php -r 'if (version_compare(PHP_VERSION, "8.4.27", "<")) { fwrite(STDERR, "ERROR: this image ships PHP " . PHP_VERSION . " (< 8.4.27), vulnerable to CVE-2026-109618/9. Rebuild once Debian publishes php8.4 8.4.27+.\n"); exit(1); }' && \
+	printf 'PHP %s (>= 8.4.27, CVE-2026-109618/9 fixed); Debian packages refreshed %s\n' \
+		"$(php -r 'echo PHP_VERSION;')" "${DEBIAN_APT_REFRESH}"
 
 RUN mkdir -p /var/www/FreshRSS/ /run/apache2/ /usr/src/freshrss-patches
 
 # Upstream revision this image is built from. Bump it (and re-apply `patches/`) to update.
-ARG FRESHRSS_REF=62eb3b405e94dd7bc9f1e9e9c788ee3f69d6ed74
+# 08f97bd4 is the `1.30.4` release tag.
+ARG FRESHRSS_REF=08f97bd497ace733c151ea1c709d85cd5b65cc53
 # Base branch, only used to give `git checkout` a name in error messages.
-ARG FRESHRSS_BRANCH=1.30.0
+ARG FRESHRSS_BRANCH=1.30.4
 
 WORKDIR /usr/src/freshrss
 
@@ -86,7 +112,9 @@ LABEL \
 	org.opencontainers.image.vendor="FreshRSS" \
 	org.opencontainers.image.version="${FRESHRSS_VERSION}" \
 	nuln.patch.freshrss-ref="${FRESHRSS_REF}" \
-	nuln.patch.freshrss-branch="${FRESHRSS_BRANCH}"
+	nuln.patch.freshrss-branch="${FRESHRSS_BRANCH}" \
+	# Which day the distribution packages were fetched, i.e. how old the PHP security patches are.
+	nuln.base.apt-refresh="${DEBIAN_APT_REFRESH}"
 
 RUN \
 	chmod +x /usr/local/bin/freshrss-entrypoint /usr/local/bin/freshrss-healthcheck && \

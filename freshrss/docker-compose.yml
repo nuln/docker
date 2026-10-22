@@ -12,7 +12,7 @@ services:
     # The package on ghcr.io is PRIVATE: authenticate once with a token that has the `read:packages`
     # scope before starting, otherwise the pull fails with "not found".
     #   echo "$GHCR_TOKEN" | docker login ghcr.io -u nuln --password-stdin
-    image: ${FRESHRSS_IMAGE:-ghcr.io/nuln/freshrss:1.30.0}
+    image: ${FRESHRSS_IMAGE:-ghcr.io/nuln/freshrss:1.30.4}
     container_name: freshrss
     restart: unless-stopped
 

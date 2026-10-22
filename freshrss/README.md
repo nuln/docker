@@ -8,9 +8,9 @@ review and to re-apply on a newer release.
 
 | | |
 |---|---|
-| Image | `ghcr.io/nuln/freshrss:1.30.0` (pinned upstream version) and `:latest` — **private package, see "Pulling the image"** |
+| Image | `ghcr.io/nuln/freshrss:1.30.4` (pinned upstream version) and `:latest` — **private package, see "Pulling the image"** |
 | Base | Debian + Apache + mod_php + `mod_auth_openidc` (required for OIDC) |
-| Upstream | **1.30.0** (the latest release), pinned by commit in `ARG FRESHRSS_REF` |
+| Upstream | **1.30.4** (the latest release), pinned by commit in `ARG FRESHRSS_REF` |
 | Licence | AGPL-3.0, like FreshRSS — this image is a modified distribution and must keep offering the corresponding source (the patch lives in this repository) |
 
 ---
@@ -32,26 +32,73 @@ when that sub-directory is reachable through several domains:
 
 ### Upstream base and carried-over security fixes
 
-The image is built from the **1.30.0 release tag**, not from the development branch, so the
-published tag says `1.30.0` and the code is a released version.
+The image is built from the **1.30.4 release tag**, not from the development branch, so the
+published tag says `1.30.4` and the code is a released version.
 
-FreshRSS merged several security fixes *after* 1.30.0, three of which touch exactly the files this
-patch modifies. Dropping them silently would have made this image weaker than the multi-domain
-build it replaces, so two of them are carried inside the patch:
+1.30.4 adds no new patch fixes; it exists because of **PHP**, not FreshRSS:
+[CVE-2026-109618 / CVE-2026-109619](https://github.com/FreshRSS/FreshRSS/issues/9475) are
+pre-authentication remote code executions in PHP itself (CVSS 9.2), fixed in Debian's `php8.4`
+`8.4.27-1~deb13u1`, published 2026-10-21. A container image freezes the distribution packages it
+was built from, so `1.30.0` kept shipping `8.4.26` — vulnerable — no matter how new the FreshRSS
+source was. Check what a running container actually has:
 
-| Upstream fix | Why it is here |
+```sh
+docker exec freshrss php -v        # must read 8.4.27 or later
+docker run --rm --entrypoint sh ghcr.io/nuln/freshrss:1.30.4 -c 'php -v'
+```
+
+**The bump alone does not fix it, and that is the reusable lesson.** `FRESHRSS_BASE_IMAGE` is
+`debian:13-slim`, a *tag*: its `apt` repositories are read at build time, so the PHP version is
+decided when the layer runs and then frozen into the image. BuildKit keys a `RUN` layer on the
+command text, so once the `apt-get install` step has run, **every later build replays that layer**
+— the fixed PHP is never fetched. On 2026-10-22, rebuilding this repository without a changed ARG
+still produced `8.4.26`, while `apt-get` inside the *same* fresh base image offered `8.4.27`
+immediately. `--no-cache-filter` is no help either: it matches the step path, and this step's path
+is the literal `RUN apt-get update…`.
+
+Two mechanical defences are therefore in the Dockerfile, and neither depends on remembering:
+
+- **the apt layer is keyed to `DEBIAN_APT_REFRESH`** — a caller-supplied date. Bump the date and
+  the layer is rebuilt; the build refuses to start without one, so a cached (stale) layer cannot
+  be reused silently;
+- **the build asserts `PHP_VERSION >= 8.4.27`** and fails with the CVE name, so an image that
+  would still be vulnerable cannot be produced at all.
+
+Rebuilding on bare `debian:13-slim` is how a PHP security update is taken, and the image records
+which day it did so (`docker inspect --format '{{index .Config.Labels "nuln.base.apt-refresh"}}'`).
+Pin the digest (`ARG FRESHRSS_BASE_IMAGE=debian@sha256:…`) if a deployment must be
+byte-reproducible — but then updates are manual by definition, and the date must be bumped for
+each one.
+
+1.30.1 … 1.30.4 also carry roughly 40 upstream fixes made since 1.30.0. The ones that touch what
+this patch changes:
+
+| Upstream fix | What it changes for this image |
 |---|---|
-| `64f7f24` Improve WebSub security | re-enables the self-URL check in `p/api/pshb.php` that 1.30.0 ships commented out; this patch works on that same endpoint |
-| `6780afe` Reject token access for disabled accounts (CWE-613) | one line in `lib/Minz/Request.php`, which this patch also changes |
+| `f800a430` + `6bb0c679` WebSub: `hub.mode=verify` handling, and `hub.verify=sync` in the subscription request | `p/api/pshb.php` — the same endpoint this patch extends. Complements the `<prefix>/api/pshb.php` callback the patch builds |
+| `859a2ad0` no local DNS leak when fetching feeds through a proxy | `lib/Minz/Request.php::serverIsPublic()`, which this patch calls to decide whether WebSub may be enabled. It gained a `$allowDnsResolve` parameter; the patch's call sites are unaffected and still resolve by default |
+| `0187b15c` sanitizer: block `data:` URIs except `data:image` | `lib/simplepie/…/Sanitize.php`, fetched content only |
+| `4e5e142c` remove a vulnerable error-display code path | `lib/Minz/Error.php` |
+| `f6170833`, `74556f80`, `c5dd38b0`, `8769b4e2`, `da9dc448` … | 404 handling, refresh UX, sort overrides, Fever key no longer logged, API favicon |
 
-One is **not** carried, deliberately:
+The two security fixes this patch used to carry by hand are now upstream, in the exact form the
+patch had them, so the patch no longer touches those lines:
 
-| Upstream fix | Why not |
+| Upstream fix | Now |
 |---|---|
-| `5a270c0` Rotate session ID on all authenticated transitions (CWE-384) | it conflicts with this patch in `lib/Minz/Session.php`, and on the 1.30.0 base its callers catch a `RuntimeException` that the analysis proves is never thrown — `catch.neverThrown` in `app/Models/Auth.php` and `app/Controllers/userController.php`, which fails the project's own PHPStan level 10 gate. Shipping code that does not pass the upstream analyser is not acceptable, so this one waits for upstream's next release. |
+| `64f7f24` Improve WebSub security | upstream re-enabled the self-URL check in `p/api/pshb.php`; the patch no longer patches that block at all |
+| `6780afe` Reject token access for disabled accounts (CWE-613) | upstream added `!$conf->enabled` in `lib/Minz/Request.php` |
 
-The remaining post-1.30.0 fixes (`d5ad610` CWE-294, `a625348` CWE-352, `cd42dc7` CWE-409) touch no
-file this patch modifies and are listed here only for completeness; they are **not** present either.
+`5a270c0` — rotate the session ID on every authenticated transition (CWE-384), which 1.30.0 did
+have but this patch held back — is **in 1.30.4**, because upstream changed
+`Minz_Session::regenerateID()` to throw `RuntimeException` instead of calling `Minz_Error::error()`,
+and wrapped every caller in a `try`/`catch`. That is precisely the shape this patch needed: it
+patches `Session.php` (cookie path) and `authController.php` independently of those lines, and the
+whole tree passes PHPStan level 10, so the old `catch.neverThrown` objection is gone. The
+login, re-authentication and logout paths therefore now rotate the session ID.
+
+`p/api/pshb.php` is still patched, for the verification challenge only (row 6 above).
+
 
 `patches/0001-multi-domain-and-subdirectory.patch` fixes all six:
 
@@ -72,8 +119,8 @@ file this patch modifies and are listed here only for completeness; they are **n
 
 ### What was verified
 
-`test/integration.sh` — 178 checks against a real Apache + PHP + `mod_auth_openidc` stack, with a
-mock identity provider, a mock WebSub hub and a mock reverse proxy:
+`test/integration.sh` — 230 checks against a real Apache + PHP + `mod_auth_openidc` stack, with a
+mock identity provider, a mock WebSub hub and a mock reverse proxy (all re-run on the 1.30.4 base):
 
 - every entry point serves (`/rss/`, `/rss/i/`, `/rss/api/pshb.php`, `/rss/f.php`) and
   `/rss/rss/` 404s
@@ -110,9 +157,24 @@ mock identity provider, a mock WebSub hub and a mock reverse proxy:
 challenge/response login, subscribing to a real feed, refreshing, reading, search, OPML/RSS
 export, the Google Reader and Fever APIs, the second domain (login, read, write) and logout.
 
-Upstream's own gates pass on the patched tree: `phpcs`, **PHPStan level 10 with zero errors**,
-and the whole PHPUnit suite — 778 tests, 1472 assertions, no failures. The 41 added tests live in
+`test/browser.sh` — 38 checks with a real Chromium, because every check above logs in with curl and
+therefore never runs the JavaScript the login page depends on: the login button is enabled by
+`extra.js`, `bcrypt.js` derives the challenge, submitting produces a POST, the cookies stay scoped to
+`/rss/`, and the reader logs no CSP warning. Run once direct, once behind a prefix-stripping proxy
+and once behind Caddy, plus a scenario where the scripts are withheld: the page must say so instead
+of leaving a dead button, and must not enter a reload loop.
+
+Upstream's own gates pass on the patched 1.30.4 tree: `phpcs` (631 files, no violations),
+**PHPStan level 10 with zero errors**, and the whole PHPUnit suite — 811 tests, 1582 assertions.
+Three `DatabaseDAOTest::test_strilike_MySQL` data sets fail, and fail identically on the **unpatched**
+tree at the same ref (a SQLite collation difference under `php:8.3-cli`; CI tolerates them by name,
+so a real regression still fails the build). The patch adds 41 tests, all passing, in
 `tests/lib/Minz/RequestTest.php` and `tests/lib/Minz/UrlTest.php`.
+
+The same suites were run against an **unpatched 1.30.4 image built from the same Dockerfile**, to
+confirm the extended behaviour comes from the patch and not from upstream: integration aborts at
+`cookie scoped to prefix` (`HttpOnly; SameSite=Lax`, no `path=/rss/`), which is exactly the
+logged-out-on-every-request defect described above.
 
 ### Known limits
 
@@ -145,13 +207,22 @@ and the whole PHPUnit suite — 778 tests, 1472 assertions, no failures. The 41 
   documents (`FRESHRSS_PATH_PREFIX`, `FRESHRSS_BASE_URL`, `FRESHRSS_WEBSUB_BASE_URL`) do not go
   through the CLI parser and are unaffected. `test/integration.sh` pins both spellings so the
   behaviour cannot change unnoticed.
+- **WebSub status is per user and per push.** Since 1.30.1 a subscription only counts as enabled
+  once a push has actually been received (`websub_pending` in the feed editor until then), the key
+  is a random 32-byte value instead of a salt-derived hash, and a subscription whose advertised hub
+  no longer matches the stored `!hub.json` is refused with a warning rather than silently renewed.
+  `test/integration.sh` performs the full round trip with a mock hub, so the pending → enabled
+  transition is exercised.
 - `create-user.php --email` does **not** send a validation mail: it stores `mail_login` before
   calling the updater, so the "the address changed" branch that signs the token never fires. The
   address has to be set from the profile form (or `FreshRSS_user_Controller::updateUser()`, which is
   what that form calls) for the mail to be sent. Upstream behaviour, not a side effect of the patch.
-- **Only `linux/arm64` was tested locally**, because the machine that produced this image had no
+- **Only `linux/arm64` was tested locally**, because the machine that produced this image has no
   access to a registry to pull an `amd64` base image. The CI workflow runs the same suites on
-  `linux/amd64`, so the multi-architecture claim rests on CI, not on a local run.
+  `linux/amd64`, so the multi-architecture claim rests on CI, not on a local run. That applies to
+  the PHP and CVE position too: `8.4.27` is what Debian arm64 ships today, and the amd64 build
+  takes the same `trixie-security` package — verify with `docker exec … php -v` on the tag you
+  deploy.
 
 ### Pulling the image
 
@@ -162,7 +233,7 @@ whichever suits the deployment:
 # 1. Authenticate once with a personal access token that has the `read:packages` scope
 #    (classic token: "read:packages"; fine-grained token: Packages → Read).
 echo "$GHCR_TOKEN" | docker login ghcr.io -u nuln --password-stdin
-docker pull ghcr.io/nuln/freshrss:1.30.0
+docker pull ghcr.io/nuln/freshrss:1.30.4
 
 # 2. Or make the package public once, in the GitHub UI, and then no credentials are needed at all:
 #    https://github.com/users/nuln/packages/container/package/freshrss/settings
@@ -170,17 +241,22 @@ docker pull ghcr.io/nuln/freshrss:1.30.0
 #    public build of a public project, and this repository already holds its source.
 ```
 
-The published tags are the upstream version the patch is based on — currently **`1.30.0`** — plus
+The published tags are the upstream version the patch is based on — currently **`1.30.4`** — plus
 **`latest`**. Both point at the same multi-architecture manifest (`linux/amd64` and `linux/arm64`),
 so the right thing to deploy is the version tag, not `latest`:
 
 ```yaml
 services:
   freshrss:
-    image: ghcr.io/nuln/freshrss:1.30.0   # pinned; `latest` moves
+    image: ghcr.io/nuln/freshrss:1.30.4   # pinned; `latest` moves
 ```
 
-Pin by digest if the deployment must be byte-reproducible:
+The old `1.30.0` tag is **not** re-published and stays on PHP 8.4.26, which is vulnerable to
+CVE-2026-109618/9 (see "Upstream base and carried-over security fixes"). Moving to `1.30.4` is a
+drop-in change: no volume layout, configuration key or environment variable differs.
+
+The digest below was published for 1.30.0 and is kept only as a worked example of the syntax —
+replace it with the digest of the tag you actually ship (`docker image inspect --format '{{index .RepoDigests 0}}'`):
 
 ```sh
 docker pull ghcr.io/nuln/freshrss@sha256:a5f834f74b47f8a33eb949051e5145af7a81c4d777a2af89e3f938b9e5a5d755
@@ -221,7 +297,7 @@ docker compose -f docker-compose.proxy.yml up -d
 The reverse proxy itself is not part of these files — `Caddyfile.example` is a working one. What
 matters is that it must **not strip the prefix**; see the next section.
 
-Both files take the image from `${FRESHRSS_IMAGE:-ghcr.io/nuln/freshrss:1.30.0}`, so a test run can
+Both files take the image from `${FRESHRSS_IMAGE:-ghcr.io/nuln/freshrss:1.30.4}`, so a test run can
 point them at a locally built image without editing the file.
 
 ### 2b. Two hops: a proxy in front of Caddy
@@ -503,8 +579,10 @@ itself so the image can be rebuilt from the patch alone.
 
 ## Updating FreshRSS
 
-1. Bump `ARG FRESHRSS_REF` in `Dockerfile` to the new upstream commit.
-2. Rebase the patch:
+1. Bump `ARG FRESHRSS_REF` in `Dockerfile` to the new upstream commit (and `FRESHRSS_BRANCH` to the
+   tag name, for error messages only), then the image tag in `docker-compose*.yml`, `.env.example`
+   and this README.
+2. Rebase the patch, in a checkout that has no `vendor/` yet:
 
    ```sh
    git clone https://github.com/FreshRSS/FreshRSS.git && cd FreshRSS
@@ -512,13 +590,46 @@ itself so the image can be rebuilt from the patch alone.
    git apply --check ~/nuln/docker/freshrss/patches/0001-multi-domain-and-subdirectory.patch
    git apply      ~/nuln/docker/freshrss/patches/0001-multi-domain-and-subdirectory.patch
    # resolve conflicts, then re-run the checks below, then regenerate the patch
-   git diff > ~/nuln/docker/freshrss/patches/0001-multi-domain-and-subdirectory.patch
+   git add -A                       # staged, so untracked new files (login-watchdog.js, tests) are included
+   git diff --cached > ~/nuln/docker/freshrss/patches/0001-multi-domain-and-subdirectory.patch
    ```
+
+   `git diff` without `--cached` silently drops files the patch **adds**, and would produce a patch
+   that no longer contains `p/scripts/login-watchdog.js` or the two test files.
+   Run `composer install` only *after* regenerating: `vendor/` is then untracked noise in
+   `git status`, and must never end up in the patch.
 
 3. Verify: `vendor/bin/phpcs .`, `vendor/bin/phpstan analyse -c phpstan.dist.neon`,
    `vendor/bin/phpunit --bootstrap ./tests/bootstrap.php ./tests`.
    `.github/workflows/freshrss.yml` does all of this and fails the build with a clear message if
    the patch stops applying.
+
+   The build **refuses to run without `DEBIAN_APT_REFRESH`**, and fails when the PHP it produced
+   is older than 8.4.27. Pass today's date:
+
+   ```sh
+   docker build --build-arg "DEBIAN_APT_REFRESH=$(date -u +%Y-%m-%d)" -t ghcr.io/nuln/freshrss:1.30.4 .
+   ```
+4. Rebuild **and** run the suites against the new image — the patch applying is not the same thing
+   as the instance behaving:
+
+   ```sh
+   docker build --build-arg "DEBIAN_APT_REFRESH=$(date -u +%Y-%m-%d)" -t ghcr.io/nuln/freshrss:1.30.4 .
+   ./test/integration.sh ghcr.io/nuln/freshrss:1.30.4
+   ./test/functional.sh  ghcr.io/nuln/freshrss:1.30.4
+   ./test/browser.sh     ghcr.io/nuln/freshrss:1.30.4
+   ```
+
+   `docker exec <container> php -v` must report `8.4.27` or later. The build itself refuses to
+   produce an image with a PHP older than that (CVE-2026-109618/9), so a green build that then
+   reports an older version means the container is not the image you just built.
+
+   **Rebuild on a schedule too, not only when FreshRSS releases.** A CVE in a PHP extension needs no
+   upstream release at all: the fix arrives in `trixie-security`, and nothing except a rebuild picks
+   it up. Nothing today does this automatically — the workflow only runs on a push under
+   `freshrss/**` — so a monthly rebuild (manually, or `workflow_dispatch`, or a `schedule:` entry)
+   is the practical minimum for an internet-facing instance.
+
 
 ## Notes and limits
 

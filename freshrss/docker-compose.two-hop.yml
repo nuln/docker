@@ -14,7 +14,7 @@ name: freshrss-two-hop
 
 services:
   freshrss:
-    image: ${FRESHRSS_IMAGE:-ghcr.io/nuln/freshrss:1.30.0}
+    image: ${FRESHRSS_IMAGE:-ghcr.io/nuln/freshrss:1.30.4}
     container_name: freshrss
     restart: unless-stopped
 
