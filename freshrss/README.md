@@ -164,6 +164,24 @@ therefore never runs the JavaScript the login page depends on: the login button 
 and once behind Caddy, plus a scenario where the scripts are withheld: the page must say so instead
 of leaving a dead button, and must not enter a reload loop.
 
+`test/upgrade.sh` — 39 checks for the path every operator takes and nothing else covered: a data
+volume created by **1.30.0** (the previous release), started on the new image. It installs, subscribes
+and reads on the old image, then mounts the same volume on the new one and asserts that
+
+- the instance is not re-opened for installation, keeps serving, and has no `/rss/i/i`;
+- the subscription, its articles, the second user, the API password hash and a per-user setting are
+  all still there, and `base_url` is still the stored path;
+- the password set on the old build logs in, the reader loads, and a stale session cookie from the
+  old build does **not** authenticate (1.30.4 rotates the session id on login);
+- a write (subscription form) and the refresh CLI both work against the migrated database, and
+  FreshRSS's own `cli/health.php` reports nothing;
+- the PHP on the new image is ≥ 8.4.27 — the CVE fix comes from the image, not from the app;
+- the patch is still in effect: cookie scoped to `/rss/`, CSP header, login watchdog script, the
+  WebSub base URL field.
+
+All five suites were run on the image that carries **PHP 8.4.27**: 230 + 68 + 38 + 39 checks, zero
+failures, plus `test/caddy-routes.sh` (49).
+
 Upstream's own gates pass on the patched 1.30.4 tree: `phpcs` (631 files, no violations),
 **PHPStan level 10 with zero errors**, and the whole PHPUnit suite — 811 tests, 1582 assertions.
 Three `DatabaseDAOTest::test_strilike_MySQL` data sets fail, and fail identically on the **unpatched**
@@ -618,7 +636,13 @@ itself so the image can be rebuilt from the patch alone.
    ./test/integration.sh ghcr.io/nuln/freshrss:1.30.4
    ./test/functional.sh  ghcr.io/nuln/freshrss:1.30.4
    ./test/browser.sh     ghcr.io/nuln/freshrss:1.30.4
+   ./test/upgrade.sh     ghcr.io/nuln/freshrss:1.30.4 ghcr.io/nuln/freshrss:<previous tag>
    ```
+
+   `test/upgrade.sh` is the one that matters most when the upstream version changes: it starts the
+   old image, builds a real installation on a volume, then starts the new image **on that same
+   volume** and checks that the subscription, the articles, the users, the API password and the
+   per-user config all survived. Cold-start tests cannot catch a broken migration.
 
    `docker exec <container> php -v` must report `8.4.27` or later. The build itself refuses to
    produce an image with a PHP older than that (CVE-2026-109618/9), so a green build that then

@@ -287,3 +287,15 @@ jobs:
       # is invisible to a request-level test.
       - name: Browser test (a real Chromium performs the login)
         run: ./freshrss/test/browser.sh ${{ matrix.image }}
+
+      # Every suite above builds its data volume from scratch. This one takes a volume created by the
+      # PREVIOUS release and starts the new image on it — the only path an operator actually takes,
+      # and the only one where schema migrations, the per-user config and the API password have to
+      # survive. It also asserts the upgrade picks up the PHP CVE fix, since that is baked into the
+      # image rather than the app.
+      - name: Upgrade test (a 1.30.0 data volume, moved to this image)
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker pull ghcr.io/nuln/freshrss:1.30.0
+          ./freshrss/test/upgrade.sh ${{ matrix.image }} ghcr.io/nuln/freshrss:1.30.0
