@@ -490,7 +490,7 @@ index c671baba..333dbe8d 100644
  	}
  
  	private static function extractProtocol(): string {
-@@ -329,19 +399,51 @@ class Minz_Request {
+@@ -329,19 +399,59 @@ class Minz_Request {
  
  	private static function extractHost(): string {
  		$host = is_string($_SERVER['HTTP_X_FORWARDED_HOST'] ?? null) ? $_SERVER['HTTP_X_FORWARDED_HOST'] : '';
@@ -526,7 +526,15 @@ index c671baba..333dbe8d 100644
 +		try {
 +			$conf = Minz_Configuration::get('system');
 +			$allowed = $conf->allowed_hosts;
-+		} catch (Minz_ConfigurationException) {
++		} catch (Minz_ConfigurationException $e) {
++			// Falling back to the request host is the right default when the
++			// configuration cannot be read at all, but it must not be silent: a
++			// deployment that believes it is protected and is not looks exactly
++			// like a working one. That is not hypothetical — allowed_hosts was
++			// stored and honoured in every run after one unexplained failure — so
++			// if it happens again, the log says so instead of the only symptom
++			// being a spoofed link in the output.
++			Minz_Log::warning('allowed_hosts ignored, configuration unreadable: ' . $e->getMessage());
  			return $host;
  		}
 -		return 'localhost';
