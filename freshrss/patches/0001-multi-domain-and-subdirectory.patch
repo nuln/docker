@@ -1,10 +1,216 @@
 diff --git a/app/Controllers/authController.php b/app/Controllers/authController.php
-index c5a1b6ea..8c716c32 100644
+index c5a1b6ead..86a39f02a 100644
 --- a/app/Controllers/authController.php
 +++ b/app/Controllers/authController.php
-@@ -108,6 +108,10 @@ class FreshRSS_auth_Controller extends FreshRSS_ActionController {
+@@ -37,7 +37,13 @@ class FreshRSS_auth_Controller extends FreshRSS_ActionController {
+ 				$auth_type !== FreshRSS_Context::systemConf()->auth_type ||
+ 				$anon_refresh !== FreshRSS_Context::systemConf()->allow_anonymous_refresh ||
+ 				$api_enabled !== FreshRSS_Context::systemConf()->api_enabled) {
+-				if (in_array($auth_type, ['form', 'http_auth', 'none'], true)) {
++				// Refuse to switch to OIDC while it has no provider: doing so would replace the only
++				// working login with an error page, which is a lockout, not a configuration.
++				if ($auth_type === FreshRSS_Oidc::AUTH_TYPE && !FreshRSS_Oidc::isConfigured()) {
++					Minz_Request::bad(_t('feedback.auth.oidc.misconfigured'), ['c' => 'auth', 'a' => 'index']);
++					return;
++				}
++				if (in_array($auth_type, ['form', 'http_auth', 'none', FreshRSS_Oidc::AUTH_TYPE], true)) {
+ 					FreshRSS_Context::systemConf()->auth_type = $auth_type;
+ 				} else {
+ 					FreshRSS_Context::systemConf()->auth_type = 'form';
+@@ -78,6 +84,7 @@ class FreshRSS_auth_Controller extends FreshRSS_ActionController {
+ 		FreshRSS_Context::initUser(Minz_User::INTERNAL_USER, false);
+ 		match ($auth_type) {
+ 			'form' => Minz_Request::forward(['c' => 'auth', 'a' => 'formLogin']),
++			FreshRSS_Oidc::AUTH_TYPE => Minz_Request::forward(['c' => 'auth', 'a' => 'oidc']),
+ 			'http_auth' => Minz_Error::error(403, [
+ 					'error' => [
+ 						_t('feedback.access.denied'),
+@@ -90,6 +97,174 @@ class FreshRSS_auth_Controller extends FreshRSS_ActionController {
+ 		};
+ 	}
+ 
++	/**
++	 * Start the OpenID Connect login: show a sign-in page, or, with `start=1`, redirect to the
++	 * provider.
++	 *
++	 * The landing page exists so that a failed callback has somewhere to come back to and say what
++	 * happened. Redirecting straight from here would turn a provider error into a loop between this
++	 * instance and the identity provider.
++	 */
++	public function oidcAction(): void {
++		if (FreshRSS_Context::systemConf()->auth_type !== FreshRSS_Oidc::AUTH_TYPE) {
++			Minz_Error::error(404);
++			return;
++		}
++		if (!FreshRSS_Oidc::isConfigured()) {
++			Minz_Log::error('OIDC is the configured authentication method but it has no provider metadata URL, client id or secret');
++			Minz_Error::error(500, ['error' => [_t('feedback.auth.oidc.misconfigured')]], false);
++			return;
++		}
++
++		invalidateHttpCache();
++
++		if (!Minz_Request::paramBoolean('start')) {
++			// A visible page rather than an immediate redirect, so an error from the callback can be
++			// displayed on it instead of bouncing back to the provider.
++			FreshRSS_View::prependTitle(_t('gen.auth.login') . ' · ');
++			return;
++		}
++
++		$state = bin2hex(random_bytes(32));
++		$nonce = bin2hex(random_bytes(32));
++		$codeVerifier = rtrim(strtr(base64_encode(random_bytes(48)), '+/', '-_'), '=');
++		Minz_Session::_params([
++			'oidc_state' => $state,
++			'oidc_nonce' => $nonce,
++			'oidc_verifier' => $codeVerifier,
++		]);
++
++		try {
++			$url = FreshRSS_Oidc::authorizationUrl($state, $nonce, $codeVerifier);
++		} catch (Minz_Exception $e) {
++			Minz_Log::error('OIDC: cannot build the authorization URL: ' . $e->getMessage());
++			Minz_Error::error(502, ['error' => [_t('feedback.auth.oidc.provider')]], false);
++			return;
++		}
++
++		header('Location: ' . $url, true, 303);
++		exit;
++	}
++
++	/**
++	 * Finish the OpenID Connect login: verify `state`, exchange the code, verify the ID token.
++	 *
++	 * Every failure path ends on the sign-in page with a notification. None of them falls through to
++	 * "logged in": this method either establishes a session from a verified token or refuses.
++	 */
++	public function oidcCallbackAction(): void {
++		if (FreshRSS_Context::systemConf()->auth_type !== FreshRSS_Oidc::AUTH_TYPE) {
++			Minz_Error::error(404);
++			return;
++		}
++		invalidateHttpCache();
++
++		$state = Minz_Request::paramString('state');
++		$expectedState = Minz_Session::paramString('oidc_state');
++		$expectedNonce = Minz_Session::paramString('oidc_nonce');
++		$codeVerifier = Minz_Session::paramString('oidc_verifier');
++
++		// Consume the flow parameters before verifying anything: `state` is one-time, so a replayed
++		// callback cannot succeed even if it arrives twice.
++		Minz_Session::_param('oidc_state');
++		Minz_Session::_param('oidc_nonce');
++		Minz_Session::_param('oidc_verifier');
++
++		$providerError = Minz_Request::paramString('error');
++		if ($providerError !== '') {
++			$description = Minz_Request::paramString('error_description');
++			Minz_Log::warning('OIDC: provider returned ' . $providerError . ($description === '' ? '' : ': ' . $description));
++			Minz_Request::setBadNotification(_t('feedback.auth.oidc.refused'));
++			Minz_Request::forward(['c' => 'auth', 'a' => 'login'], true);
++			return;
++		}
++
++		if ($state === '' || $expectedState === '' || $expectedNonce === '' || $codeVerifier === '' ||
++			!hash_equals($expectedState, $state)) {
++			Minz_Log::warning('OIDC: callback with a missing or mismatched state');
++			Minz_Error::error(403, ['error' => [_t('feedback.access.denied')]], false);
++			return;
++		}
++
++		$code = Minz_Request::paramString('code');
++		if ($code === '') {
++			Minz_Log::warning('OIDC: callback without a code');
++			Minz_Error::error(400, ['error' => [_t('feedback.auth.login.invalid')]], false);
++			return;
++		}
++
++		$username = '';
++		try {
++			$tokens = FreshRSS_Oidc::exchangeCode($code, $codeVerifier);
++			$idToken = is_string($tokens['id_token'] ?? null) ? $tokens['id_token'] : '';
++			if ($idToken === '') {
++				throw new Minz_Exception('the token endpoint returned no id_token');
++			}
++			$claims = FreshRSS_Oidc::verifyIdToken($idToken, $expectedNonce);
++			$username = FreshRSS_Oidc::usernameFromClaims($claims);
++
++			if (!FreshRSS_UserDAO::exists($username)) {
++				$config = FreshRSS_Oidc::config();
++				// Refuse before creating anything when automatic registration is disabled: a typo in
++				// the claim name must not silently create a second account.
++				if (!$config['auto_register']) {
++					throw new Minz_Exception('no FreshRSS account for “' . $username . '” and automatic registration is disabled');
++				}
++				$email = is_string($claims['email'] ?? null) && filter_var($claims['email'], FILTER_VALIDATE_EMAIL) !== false
++					? $claims['email'] : null;
++				$language = Minz_Translate::getLanguage(null, Minz_Request::getPreferredLanguages(),
++					FreshRSS_Context::systemConf()->language);
++				// The password is random and never disclosed: this account authenticates through the
++				// provider, and a password login must not become a way around it.
++				if (!FreshRSS_user_Controller::createUser($username, $email, bin2hex(random_bytes(32)), ['language' => $language])) {
++					throw new Minz_Exception('the FreshRSS account could not be created for “' . $username . '”');
++				}
++			}
++
++			FreshRSS_Context::initUser($username);
++			if (!FreshRSS_Context::hasUserConf()) {
++				throw new Minz_Exception('the FreshRSS account “' . $username . '” could not be loaded');
++			}
++			if (!FreshRSS_Context::userConf()->enabled) {
++				throw new Minz_Exception('the FreshRSS account “' . $username . '” is disabled');
++			}
++		} catch (Minz_Exception $e) {
++			// The message is logged, never shown: it can contain identifiers from the provider.
++			Minz_Log::warning('OIDC login refused: ' . $e->getMessage());
++			Minz_Request::setBadNotification(_t('feedback.auth.login.invalid'));
++			Minz_Request::forward(['c' => 'auth', 'a' => 'login'], true);
++			return;
++		}
++
++		try {
++			Minz_Session::regenerateID('FreshRSS');
++		} catch (RuntimeException $e) {
++			Minz_Log::error('OIDC: session could not be regenerated for user ' . $username . ': ' . $e->getMessage());
++			Minz_Request::setBadNotification(_t('install.session.nok'));
++			Minz_Request::forward(['c' => 'auth', 'a' => 'login'], true);
++			return;
++		}
++
++		Minz_Session::_params([
++			Minz_User::CURRENT_USER => $username,
++			'passwordHash' => FreshRSS_Context::userConf()->passwordHash,
++			'csrf' => false,
++		]);
++		if (!FreshRSS_Auth::giveAccess()) {
++			Minz_Log::warning('OIDC: access could not be granted to ' . $username . ' after a valid token');
++			Minz_Request::setBadNotification(_t('feedback.auth.login.invalid'));
++			Minz_Request::forward(['c' => 'auth', 'a' => 'login'], true);
++			return;
++		}
++		FreshRSS_UserDAO::touch($username);
++
++		Minz_Request::good(
++			_t('feedback.auth.login.success'),
++			['c' => 'index', 'a' => 'index'],
++			showNotification: FreshRSS_Context::userConf()->good_notification_timeout > 0
++		);
++	}
++
+ 	/**
+ 	 * This action handles form login page.
+ 	 *
+@@ -107,7 +282,18 @@ class FreshRSS_auth_Controller extends FreshRSS_ActionController {
+ 	public function formLoginAction(): void {
  		invalidateHttpCache();
  
++		// The password form must never be reachable on an instance that authenticates through the
++		// provider: it would be a second, weaker way in.
++		if (FreshRSS_Context::systemConf()->auth_type === FreshRSS_Oidc::AUTH_TYPE) {
++			Minz_Request::forward(['c' => 'auth', 'a' => 'oidc'], true);
++			return;
++		}
++
  		FreshRSS_View::prependTitle(_t('gen.auth.login') . ' · ');
 +		// The submit button of the login form ships disabled and is only enabled by
 +		// p/scripts/extra.js. This watchdog reports the case where that never happens, instead of
@@ -13,7 +219,7 @@ index c5a1b6ea..8c716c32 100644
  		FreshRSS_View::appendScript(Minz_Url::display('/scripts/vendor/bcrypt.js?' . @filemtime(PUBLIC_PATH . '/scripts/vendor/bcrypt.js')));
  		$this->view->auth_autofills = FreshRSS_FormAuth::getAutofilledFields();
  
-@@ -238,6 +242,10 @@ class FreshRSS_auth_Controller extends FreshRSS_ActionController {
+@@ -238,6 +424,10 @@ class FreshRSS_auth_Controller extends FreshRSS_ActionController {
  			}
  		}
  		FreshRSS_View::prependTitle(_t('gen.auth.reauth.title') . ' · ');
@@ -24,8 +230,90 @@ index c5a1b6ea..8c716c32 100644
  		FreshRSS_View::appendScript(Minz_Url::display('/scripts/vendor/bcrypt.js?' . @filemtime(PUBLIC_PATH . '/scripts/vendor/bcrypt.js')));
  		$this->view->auth_autofills = FreshRSS_FormAuth::getAutofilledFields();
  	}
+@@ -255,6 +445,15 @@ class FreshRSS_auth_Controller extends FreshRSS_ActionController {
+ 			} catch (RuntimeException $e) {
+ 				Minz_Log::error('Session could not be regenerated during logout! ' . $e->getMessage());
+ 			}
++			if (FreshRSS_Context::systemConf()->auth_type === FreshRSS_Oidc::AUTH_TYPE) {
++				// The provider may hold its own session; leaving it open would make the next visit
++				// silently sign the user back in, which reads as "logout did not work".
++				$endSession = FreshRSS_Oidc::endSessionUrl();
++				if ($endSession !== '') {
++					header('Location: ' . $endSession, true, 303);
++					exit;
++				}
++			}
+ 			Minz_Request::good(
+ 				_t('feedback.auth.logout.success'),
+ 				[ 'c' => 'index', 'a' => 'index' ],
+@@ -277,6 +476,13 @@ class FreshRSS_auth_Controller extends FreshRSS_ActionController {
+ 			Minz_Request::forward(['c' => 'index', 'a' => 'index'], true);
+ 		}
+ 
++		// Accounts come from the provider; a self-registration form would create a local password
++		// that bypasses it.
++		if (FreshRSS_Context::systemConf()->auth_type === FreshRSS_Oidc::AUTH_TYPE) {
++			Minz_Error::error(403);
++			return;
++		}
++
+ 		if (FreshRSS_user_Controller::max_registrations_reached()) {
+ 			Minz_Error::error(403);
+ 		}
+diff --git a/app/Models/Auth.php b/app/Models/Auth.php
+index 90be439cb..9d033a2dd 100644
+--- a/app/Models/Auth.php
++++ b/app/Models/Auth.php
+@@ -104,6 +104,15 @@ class FreshRSS_Auth {
+ 				return $login_ok;
+ 			case 'none':
+ 				return true;
++			case 'oidc':
++				// The ID token is verified once, in authController::oidcCallbackAction(), and the
++				// result is stored in the session exactly like a form login. There is no remember-me
++				// cookie: an OIDC login must not outlive the session, and the provider owns its own
++				// session lifetime.
++				$current_user = Minz_User::name() ?? '';
++				return $current_user !== '' && $current_user !== Minz_User::INTERNAL_USER &&
++					Minz_Session::paramString('passwordHash') !== '' &&
++					FreshRSS_UserDAO::exists($current_user);
+ 			default:
+ 				// TODO load extension
+ 				return false;
+@@ -123,6 +132,9 @@ class FreshRSS_Auth {
+ 
+ 		switch (FreshRSS_Context::systemConf()->auth_type) {
+ 			case 'form':
++			case 'oidc':
++				// For OIDC the session hash is written by oidcCallbackAction() from the account's own
++				// configuration after the token was verified, so the same comparison applies.
+ 				self::$login_ok = Minz_Session::paramString('passwordHash') === FreshRSS_Context::userConf()->passwordHash;
+ 				break;
+ 			case 'http_auth':
+@@ -193,6 +205,9 @@ class FreshRSS_Auth {
+ 				Minz_Session::_param('passwordHash');
+ 				FreshRSS_FormAuth::deleteCookie();
+ 				break;
++			case 'oidc':
++				Minz_Session::_param('passwordHash');
++				break;
+ 			case 'http_auth':
+ 			case 'none':
+ 				// Nothing to do…
+@@ -245,8 +260,9 @@ class FreshRSS_Auth {
+ 		$last_reauth = Minz_Session::paramInt('lastReauth');
+ 
+ 		if ($auth_type !== 'none' && time() - $last_reauth > $reauth_time) {
+-			if ($auth_type === 'http_auth') {
+-				// TODO: not implemented - just let the user through
++			if ($auth_type === 'http_auth' || $auth_type === 'oidc') {
++				// Not applicable: the identity provider owns the session lifetime, and there is no
++				// local password to ask for again.
+ 				return false;
+ 			}
+ 			return true;
 diff --git a/app/Models/Feed.php b/app/Models/Feed.php
-index f0045666..b7fe4ab3 100644
+index f00456666..b7fe4ab30 100644
 --- a/app/Models/Feed.php
 +++ b/app/Models/Feed.php
 @@ -1423,7 +1423,9 @@ class FreshRSS_Feed extends Minz_Model {
@@ -57,11 +345,687 @@ index f0045666..b7fe4ab3 100644
  			if ($callbackUrl == '') {
  				Minz_Log::warning('Invalid callback for WebSub: ' . $this->url);
  				return false;
+diff --git a/app/Models/Oidc.php b/app/Models/Oidc.php
+new file mode 100644
+index 000000000..3597d89e0
+--- /dev/null
++++ b/app/Models/Oidc.php
+@@ -0,0 +1,653 @@
++<?php
++declare(strict_types=1);
++
++/**
++ * OpenID Connect relying party, implemented in PHP so that no Apache module is needed.
++ *
++ * Only the *authorization code* flow with PKCE is implemented, and only RS256-signed ID tokens are
++ * accepted. Both restrictions are deliberate: they are what essentially every identity provider
++ * supports, and a narrow verifier is far easier to get right than a general JOSE library.
++ *
++ * Nothing here trusts the browser for identity: the code is exchanged server-side over the back
++ * channel, and the ID token signature is verified against the provider's JWKS before any claim is
++ * read.
++ *
++ * Configuration is read from the environment first, then from `data/config.php`, so a container can
++ * be configured without writing to its data volume. The variable names match the ones this image
++ * used with mod_auth_openidc, which keeps existing deployments a drop-in change:
++ *
++ *   OIDC_PROVIDER_METADATA_URL / OIDC_ISSUER   discovery document (or issuer, from which it is built)
++ *   OIDC_CLIENT_ID, OIDC_CLIENT_SECRET          client credentials
++ *   OIDC_SCOPES                                 default `openid profile email`
++ *   OIDC_REMOTE_USER_CLAIM                      claim holding the username (default `preferred_username`)
++ *   OIDC_AUTO_REGISTER                          create the FreshRSS user on first login (default on)
++ *   OIDC_ALLOW_INSECURE                         allow http:// for the provider — tests and local dev only
++ *   OIDC_LOGOUT_REDIRECT                        also end the session at the provider on logout
++ */
++final class FreshRSS_Oidc {
++
++	public const AUTH_TYPE = 'oidc';
++
++	/** Discovery document and JWKS are cached so a login does not depend on two extra round trips. */
++	private const METADATA_TTL = 3600;
++	private const JWKS_TTL = 21600;
++	/** Tolerated clock difference between this host and the provider, in seconds. */
++	private const CLOCK_SKEW = 120;
++	private const HTTP_TIMEOUT = 10;
++
++	// ---------------------------------------------------------------------------------------
++	// Configuration
++	// ---------------------------------------------------------------------------------------
++
++	/**
++	 * Resolve the effective configuration: environment first, then `data/config.php`.
++	 *
++	 * @return array{metadata_url:string,client_id:string,client_secret:string,scopes:string,
++	 *               claim:string,auto_register:bool,allow_insecure:bool,logout_redirect:bool}
++	 */
++	public static function config(): array {
++		$conf = FreshRSS_Context::systemConf();
++
++		$metadataUrl = self::env('OIDC_PROVIDER_METADATA_URL') ?? $conf->oidc_metadata_url;
++		$issuer = self::env('OIDC_ISSUER') ?? $conf->oidc_issuer;
++		if ($metadataUrl === '' && $issuer !== '') {
++			$metadataUrl = rtrim($issuer, '/') . '/.well-known/openid-configuration';
++		}
++
++		$scopes = self::env('OIDC_SCOPES') ?? $conf->oidc_scopes;
++		if ($scopes === '') {
++			$scopes = 'openid profile email';
++		}
++
++		$claim = self::env('OIDC_REMOTE_USER_CLAIM') ?? $conf->oidc_remote_user_claim;
++		if ($claim === '') {
++			$claim = 'preferred_username';
++		}
++
++		$autoRegister = self::env('OIDC_AUTO_REGISTER');
++		$allowInsecure = self::env('OIDC_ALLOW_INSECURE');
++		$logoutRedirect = self::env('OIDC_LOGOUT_REDIRECT');
++
++		return [
++			'metadata_url' => $metadataUrl,
++			'client_id' => self::env('OIDC_CLIENT_ID') ?? $conf->oidc_client_id,
++			'client_secret' => self::env('OIDC_CLIENT_SECRET') ?? $conf->oidc_client_secret,
++			'scopes' => $scopes,
++			'claim' => $claim,
++			'auto_register' => $autoRegister === null ? $conf->oidc_auto_register : $autoRegister !== '0',
++			'allow_insecure' => $allowInsecure === null ? $conf->oidc_allow_insecure : $allowInsecure !== '0',
++			'logout_redirect' => $logoutRedirect === null ? $conf->oidc_logout_redirect : $logoutRedirect !== '0',
++		];
++	}
++
++	/** @return array{metadata_url:string,client_id:string,client_secret:string,scopes:string,
++	 *               claim:string,auto_register:bool,allow_insecure:bool,logout_redirect:bool} */
++	private static function cfg(): array {
++		/** @var array{metadata_url:string,client_id:string,client_secret:string,scopes:string,
++		 *       claim:string,auto_register:bool,allow_insecure:bool,logout_redirect:bool} */
++		return self::config();
++	}
++
++	/** An environment variable, treating an empty value as absent. */
++	private static function env(string $name): ?string {
++		$value = getenv($name);
++		return is_string($value) && $value !== '' ? $value : null;
++	}
++
++	public static function isConfigured(): bool {
++		$c = self::cfg();
++		return $c['metadata_url'] !== '' && $c['client_id'] !== '' && $c['client_secret'] !== '';
++	}
++
++	// ---------------------------------------------------------------------------------------
++	// URLs
++	// ---------------------------------------------------------------------------------------
++
++	/**
++	 * The redirect URI announced to the provider and sent again with the code exchange.
++	 *
++	 * It is derived from the request, so one instance served through several domains announces the
++	 * right one on each — but every domain must have been registered at the provider, byte for byte.
++	 */
++	public static function redirectUri(): string {
++		return self::publicBaseUrl() . '/i/?c=auth&a=oidcCallback';
++	}
++
++	/**
++	 * The public root to build OIDC URLs from.
++	 *
++	 * A full `base_url` pins one domain and is honoured. Otherwise the host follows the request, so
++	 * each domain announces its own redirect URI. Deliberately **not** `canonicalBaseUrl()`: that one
++	 * prefers `websub_base_url`, which is pinned to a single domain, and using it here would send
++	 * every domain's login to that one host.
++	 */
++	private static function publicBaseUrl(): string {
++		$base = Minz_Request::getBaseUrl();
++		if ($base === '') {
++			$base = Minz_Request::guessBaseUrl();
++		}
++		return rtrim($base, '/');
++	}
++
++	/**
++	 * @param string $state @param string $nonce @param string $codeVerifier
++	 * @throws Minz_Exception when the provider metadata cannot be loaded
++	 */
++	public static function authorizationUrl(string $state, string $nonce, string $codeVerifier): string {
++		$metadata = self::metadata();
++		$endpoint = self::stringField($metadata, 'authorization_endpoint');
++		$params = [
++			'response_type' => 'code',
++			'client_id' => self::cfg()['client_id'],
++			'redirect_uri' => self::redirectUri(),
++			'scope' => self::cfg()['scopes'],
++			'state' => $state,
++			'nonce' => $nonce,
++			'code_challenge' => self::base64UrlEncode(hash('sha256', $codeVerifier, true)),
++			'code_challenge_method' => 'S256',
++		];
++		$separator = str_contains($endpoint, '?') ? '&' : '?';
++		return $endpoint . $separator . http_build_query($params, '', '&', PHP_QUERY_RFC3986);
++	}
++
++	/**
++	 * RP-initiated logout, when the provider advertises one and the option is enabled.
++	 * Returns '' to fall back to a local logout.
++	 */
++	public static function endSessionUrl(): string {
++		$c = self::cfg();
++		if (!$c['logout_redirect']) {
++			return '';
++		}
++		try {
++			$metadata = self::metadata();
++		} catch (Minz_Exception $e) {
++			Minz_Log::warning('OIDC: no end_session_endpoint available: ' . $e->getMessage());
++			return '';
++		}
++		$endpoint = is_string($metadata['end_session_endpoint'] ?? null) ? $metadata['end_session_endpoint'] : '';
++		if ($endpoint === '') {
++			return '';
++		}
++		$params = [
++			'client_id' => $c['client_id'],
++			'post_logout_redirect_uri' => self::publicBaseUrl() . '/i/',
++		];
++		$separator = str_contains($endpoint, '?') ? '&' : '?';
++		return $endpoint . $separator . http_build_query($params, '', '&', PHP_QUERY_RFC3986);
++	}
++
++	// ---------------------------------------------------------------------------------------
++	// Token endpoint
++	// ---------------------------------------------------------------------------------------
++
++	/**
++	 * Exchange an authorization code for tokens over the back channel.
++	 *
++	 * @return array<string,mixed>
++	 * @throws Minz_Exception
++	 */
++	public static function exchangeCode(string $code, string $codeVerifier): array {
++		$c = self::cfg();
++		$metadata = self::metadata();
++		$endpoint = self::stringField($metadata, 'token_endpoint');
++
++		$body = [
++			'grant_type' => 'authorization_code',
++			'code' => $code,
++			'redirect_uri' => self::redirectUri(),
++			'client_id' => $c['client_id'],
++			'code_verifier' => $codeVerifier,
++		];
++
++		// client_secret_basic is the recommended method; some providers only implement
++		// client_secret_post, so a 401 is retried once with the secret in the body.
++		$headers = [
++			'Content-Type: application/x-www-form-urlencoded',
++			'Accept: application/json',
++		];
++		if ($c['client_secret'] !== '') {
++			$headers[] = 'Authorization: Basic ' . base64_encode(
++				rawurlencode($c['client_id']) . ':' . rawurlencode($c['client_secret']));
++		}
++		$response = self::httpPost($endpoint, http_build_query($body, '', '&'), $headers);
++		if ($response['status'] === 401 && $c['client_secret'] !== '') {
++			$body['client_secret'] = $c['client_secret'];
++			$response = self::httpPost($endpoint, http_build_query($body, '', '&'), [
++				'Content-Type: application/x-www-form-urlencoded',
++				'Accept: application/json',
++			]);
++		}
++		if ($response['status'] < 200 || $response['status'] >= 300) {
++			throw new Minz_Exception('OIDC token endpoint returned HTTP ' . $response['status']);
++		}
++		$decoded = json_decode($response['body'], true);
++		if (!is_array($decoded)) {
++			throw new Minz_Exception('OIDC token endpoint did not return a JSON object');
++		}
++		/** @var array<string,mixed> $decoded */
++		return $decoded;
++	}
++
++	// ---------------------------------------------------------------------------------------
++	// ID token verification
++	// ---------------------------------------------------------------------------------------
++
++	/**
++	 * Verify an ID token and return its claims.
++	 *
++	 * Fails closed: an unsupported algorithm, an unknown key, a bad signature or any failed claim
++	 * check throws, and the caller must treat that as "not authenticated".
++	 *
++	 * @return array<string,mixed>
++	 * @throws Minz_Exception
++	 */
++	public static function verifyIdToken(string $idToken, string $expectedNonce): array {
++		$c = self::cfg();
++		$metadata = self::metadata();
++		$jwksUrl = self::stringField($metadata, 'jwks_uri');
++		$jwks = self::cachedJson('jwks', $jwksUrl, self::JWKS_TTL);
++		try {
++			return self::verifyToken($idToken, $metadata, $jwks, $c['client_id'], $expectedNonce);
++		} catch (Minz_Exception $e) {
++			// A provider may rotate its signing key while keeping the same `kid`. Without this, a
++			// cached key would lock every user out for the whole cache lifetime — and the symptom
++			// ("login is invalid") says nothing about the cause. On a signature or key error, drop
++			// the cache and verify once more against a freshly fetched key set.
++			$message = $e->getMessage();
++			if (!str_contains($message, 'signature') && !str_contains($message, 'signing key')) {
++				throw $e;
++			}
++			@unlink(self::cacheDir() . '/jwks.json');
++			Minz_Log::warning('OIDC: key check failed, refetched JWKS: ' . $message);
++			$jwks = self::cachedJson('jwks', $jwksUrl, self::JWKS_TTL);
++			return self::verifyToken($idToken, $metadata, $jwks, $c['client_id'], $expectedNonce);
++		}
++	}
++
++	/**
++	 * Verify a token against an explicit discovery document and key set.
++	 *
++	 * Separate from {@see self::verifyIdToken()} so the verifier can be tested against a generated
++	 * key, without a provider, a cache or a configuration file.
++	 *
++	 * @param array<string,mixed> $metadata
++	 * @param array<string,mixed> $jwks
++	 * @return array<string,mixed>
++	 * @throws Minz_Exception
++	 */
++	public static function verifyToken(string $idToken, array $metadata, array $jwks,
++		string $clientId, string $expectedNonce): array {
++		$issuer = self::stringField($metadata, 'issuer');
++
++		$parts = explode('.', $idToken);
++		if (count($parts) !== 3) {
++			throw new Minz_Exception('OIDC ID token is not a compact JWS');
++		}
++		$headerRaw = self::base64UrlDecode($parts[0]);
++		$payloadRaw = self::base64UrlDecode($parts[1]);
++		$signature = self::base64UrlDecode($parts[2]);
++		if ($headerRaw === null || $payloadRaw === null || $signature === null) {
++			throw new Minz_Exception('OIDC ID token is not valid base64url');
++		}
++		$header = json_decode($headerRaw, true);
++		$claims = json_decode($payloadRaw, true);
++		if (!is_array($header) || !is_array($claims)) {
++			throw new Minz_Exception('OIDC ID token header or claims are not JSON objects');
++		}
++		/** @var array<string,mixed> $header */
++		/** @var array<string,mixed> $claims */
++
++		// Algorithm confusion is the classic JWT vulnerability: refuse anything but RS256 rather
++		// than trusting the token to name its own algorithm, and never honour `none`.
++		$alg = is_string($header['alg'] ?? null) ? $header['alg'] : '';
++		if ($alg !== 'RS256') {
++			throw new Minz_Exception('OIDC ID token algorithm not accepted: ' . $alg);
++		}
++
++		$kid = is_string($header['kid'] ?? null) ? $header['kid'] : '';
++		$publicKey = self::publicKeyFor($jwks, $kid);
++		$verified = openssl_verify($parts[0] . '.' . $parts[1], $signature, $publicKey, OPENSSL_ALGO_SHA256);
++		if ($verified !== 1) {
++			throw new Minz_Exception('OIDC ID token signature is invalid');
++		}
++
++		$now = time();
++		$tokenIssuer = is_string($claims['iss'] ?? null) ? $claims['iss'] : '';
++		if ($tokenIssuer === '' || $tokenIssuer !== $issuer) {
++			throw new Minz_Exception('OIDC ID token issuer mismatch');
++		}
++
++		$audience = $claims['aud'] ?? null;
++		$audiences = is_array($audience) ? $audience : [$audience];
++		if (!in_array($clientId, $audiences, true)) {
++			throw new Minz_Exception('OIDC ID token audience mismatch');
++		}
++		// When the token was issued to several audiences, `azp` must name this client.
++		if (isset($claims['azp']) && is_string($claims['azp']) && $claims['azp'] !== $clientId) {
++			throw new Minz_Exception('OIDC ID token authorised party mismatch');
++		}
++
++		$expires = is_int($claims['exp'] ?? null) ? $claims['exp'] : 0;
++		if ($expires === 0 || $expires + self::CLOCK_SKEW < $now) {
++			throw new Minz_Exception('OIDC ID token is expired');
++		}
++		$notBefore = is_int($claims['nbf'] ?? null) ? $claims['nbf'] : null;
++		if ($notBefore !== null && $notBefore - self::CLOCK_SKEW > $now) {
++			throw new Minz_Exception('OIDC ID token is not valid yet');
++		}
++		$issuedAt = is_int($claims['iat'] ?? null) ? $claims['iat'] : null;
++		if ($issuedAt !== null && $issuedAt - self::CLOCK_SKEW > $now) {
++			throw new Minz_Exception('OIDC ID token was issued in the future');
++		}
++
++		// The nonce binds this token to the request that started the flow, which is what stops a
++		// token obtained elsewhere from being replayed into someone else's session.
++		$nonce = is_string($claims['nonce'] ?? null) ? $claims['nonce'] : '';
++		if ($nonce === '' || !hash_equals($expectedNonce, $nonce)) {
++			throw new Minz_Exception('OIDC ID token nonce mismatch');
++		}
++
++		return $claims;
++	}
++
++	/**
++	 * The FreshRSS username carried by the configured claim.
++	 *
++	 * @param array<string,mixed> $claims
++	 * @throws Minz_Exception
++	 */
++	public static function usernameFromClaims(array $claims): string {
++		$claim = self::cfg()['claim'];
++		$username = $claims[$claim] ?? null;
++		if (!is_string($username) || $username === '') {
++			throw new Minz_Exception('OIDC ID token has no usable “' . $claim . '” claim');
++		}
++		$username = trim($username);
++		if (!FreshRSS_user_Controller::checkUsername($username)) {
++			throw new Minz_Exception('OIDC claim “' . $claim . '” is not a valid FreshRSS username');
++		}
++		return $username;
++	}
++
++	// ---------------------------------------------------------------------------------------
++	// Discovery and keys
++	// ---------------------------------------------------------------------------------------
++
++	/**
++	 * @return array<string,mixed>
++	 * @throws Minz_Exception
++	 */
++	public static function metadata(): array {
++		$c = self::cfg();
++		if ($c['metadata_url'] === '') {
++			throw new Minz_Exception('OIDC is enabled but no provider metadata URL is configured');
++		}
++		return self::cachedJson('metadata', $c['metadata_url'], self::METADATA_TTL);
++	}
++
++	/**
++	 * @param array<string,mixed> $jwks
++	 * @throws Minz_Exception
++	 */
++	private static function publicKeyFor(array $jwks, string $kid): string {
++		$keys = $jwks['keys'] ?? null;
++		if (!is_array($keys) || $keys === []) {
++			throw new Minz_Exception('OIDC JWKS contains no keys');
++		}
++		$fallback = null;
++		foreach ($keys as $key) {
++			if (!is_array($key)) {
++				continue;
++			}
++			/** @var array<string,mixed> $key */
++			$keyId = is_string($key['kid'] ?? null) ? $key['kid'] : '';
++			$pem = self::pemFromJwk($key);
++			if ($pem === null) {
++				continue;
++			}
++			if ($kid !== '' && $keyId === $kid) {
++				return $pem;
++			}
++			// A provider may publish a single key and omit `kid` from the token.
++			if ($kid === '' && $fallback === null) {
++				$fallback = $pem;
++			}
++		}
++		if ($fallback !== null) {
++			return $fallback;
++		}
++		throw new Minz_Exception('OIDC signing key not found for kid “' . $kid . '”');
++	}
++
++	/**
++	 * Read a JSON document through a small on-disk cache.
++	 *
++	 * A stale cache is accepted when the provider is temporarily unreachable: refusing every login
++	 * because the network blipped is worse than trusting a document that was valid an hour ago. With
++	 * no cache at all there is nothing to trust, so the exception propagates.
++	 *
++	 * @return array<string,mixed>
++	 * @throws Minz_Exception
++	 */
++	private static function cachedJson(string $name, string $url, int $ttl): array {
++		$path = self::cacheDir() . '/' . $name . '.json';
++		$cached = self::readCached($path, $url);
++		if ($cached !== null && time() - $cached['fetched'] <= $ttl) {
++			return $cached['data'];
++		}
++		try {
++			$data = self::httpGetJson($url);
++		} catch (Minz_Exception $e) {
++			if ($cached !== null) {
++				Minz_Log::warning('OIDC: using stale ' . $name . ' cache: ' . $e->getMessage());
++				return $cached['data'];
++			}
++			throw $e;
++		}
++		self::writeCached($path, $url, $data);
++		return $data;
++	}
++
++	/**
++	 * @return array{fetched:int,url:string,data:array<string,mixed>}|null
++	 */
++	private static function readCached(string $path, string $url): ?array {
++		$raw = @file_get_contents($path);
++		if (!is_string($raw) || $raw === '') {
++			return null;
++		}
++		$decoded = json_decode($raw, true);
++		if (!is_array($decoded) || !is_array($decoded['data'] ?? null) ||
++			!is_int($decoded['fetched'] ?? null) || ($decoded['url'] ?? null) !== $url) {
++			return null;
++		}
++		/** @var array<string,mixed> $data */
++		$data = $decoded['data'];
++		return ['fetched' => $decoded['fetched'], 'url' => $url, 'data' => $data];
++	}
++
++	/** @param array<string,mixed> $data */
++	private static function writeCached(string $path, string $url, array $data): void {
++		$dir = dirname($path);
++		if (!is_dir($dir)) {
++			@mkdir($dir, 0770, true);
++		}
++		@file_put_contents($path, json_encode(
++			['fetched' => time(), 'url' => $url, 'data' => $data], JSON_UNESCAPED_SLASHES));
++	}
++
++	private static function cacheDir(): string {
++		return DATA_PATH . '/cache/oidc';
++	}
++
++	/**
++	 * @return array<string,mixed>
++	 * @throws Minz_Exception
++	 */
++	private static function httpGetJson(string $url): array {
++		self::assertUrlAllowed($url);
++		$ch = curl_init($url);
++		if ($ch === false) {
++			throw new Minz_Exception('OIDC: cannot initialise HTTP client');
++		}
++		curl_setopt_array($ch, [
++			CURLOPT_RETURNTRANSFER => true,
++			CURLOPT_FOLLOWLOCATION => false,
++			CURLOPT_CONNECTTIMEOUT => 5,
++			CURLOPT_TIMEOUT => self::HTTP_TIMEOUT,
++			CURLOPT_HTTPHEADER => ['Accept: application/json', 'User-Agent: FreshRSS/' . FRESHRSS_VERSION],
++		]);
++		$body = curl_exec($ch);
++		$status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
++		$error = curl_error($ch);
++		curl_close($ch);
++		if (!is_string($body) || $status < 200 || $status >= 300) {
++			throw new Minz_Exception('OIDC: GET ' . $url . ' failed (HTTP ' . $status . ' ' . $error . ')');
++		}
++		$decoded = json_decode($body, true);
++		if (!is_array($decoded)) {
++			throw new Minz_Exception('OIDC: ' . $url . ' did not return a JSON object');
++		}
++		/** @var array<string,mixed> $decoded */
++		return $decoded;
++	}
++
++	/**
++	 * @param list<string> $headers
++	 * @return array{status:int,body:string,error:string}
++	 */
++	private static function httpPost(string $url, string $body, array $headers): array {
++		try {
++			self::assertUrlAllowed($url);
++		} catch (Minz_Exception $e) {
++			return ['status' => 0, 'body' => '', 'error' => $e->getMessage()];
++		}
++		$ch = curl_init($url);
++		if ($ch === false) {
++			return ['status' => 0, 'body' => '', 'error' => 'cannot initialise HTTP client'];
++		}
++		curl_setopt_array($ch, [
++			CURLOPT_RETURNTRANSFER => true,
++			CURLOPT_FOLLOWLOCATION => false,
++			CURLOPT_POST => true,
++			CURLOPT_POSTFIELDS => $body,
++			CURLOPT_CONNECTTIMEOUT => 5,
++			CURLOPT_TIMEOUT => self::HTTP_TIMEOUT,
++			CURLOPT_HTTPHEADER => $headers,
++		]);
++		$response = curl_exec($ch);
++		$status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
++		$error = curl_error($ch);
++		curl_close($ch);
++		return [
++			'status' => $status,
++			'body' => is_string($response) ? $response : '',
++			'error' => $error,
++		];
++	}
++
++	/**
++	 * Refuse a plaintext endpoint unless explicitly allowed.
++	 *
++	 * Client secrets and ID tokens travel over these URLs; accepting `http://` by default would make
++	 * a misconfiguration an interception, not a bug. Tests and local development opt in.
++	 *
++	 * @throws Minz_Exception
++	 */
++	private static function assertUrlAllowed(string $url): void {
++		$parts = parse_url($url);
++		$scheme = is_array($parts) && is_string($parts['scheme'] ?? null) ? strtolower($parts['scheme']) : '';
++		$host = is_array($parts) && is_string($parts['host'] ?? null) ? $parts['host'] : '';
++		if ($host === '' || ($scheme !== 'https' && $scheme !== 'http')) {
++			throw new Minz_Exception('OIDC: invalid provider URL: ' . $url);
++		}
++		if ($scheme !== 'https' && !self::cfg()['allow_insecure']) {
++			throw new Minz_Exception('OIDC: refusing a plaintext provider URL, set OIDC_ALLOW_INSECURE=1 to allow it');
++		}
++	}
++
++	/** @param array<string,mixed> $data @throws Minz_Exception */
++	private static function stringField(array $data, string $field): string {
++		$value = $data[$field] ?? null;
++		if (!is_string($value) || $value === '') {
++			throw new Minz_Exception('OIDC discovery document has no “' . $field . '”');
++		}
++		return $value;
++	}
++
++	// ---------------------------------------------------------------------------------------
++	// JWK → PEM (RS256 only)
++	// ---------------------------------------------------------------------------------------
++
++	/**
++	 * @param array<string,mixed> $jwk
++	 * @return string|null PEM public key, or null when the JWK is not an RSA signing key
++	 */
++	private static function pemFromJwk(array $jwk): ?string {
++		$kty = is_string($jwk['kty'] ?? null) ? $jwk['kty'] : '';
++		if ($kty !== 'RSA') {
++			return null;
++		}
++		$n = is_string($jwk['n'] ?? null) ? self::base64UrlDecode($jwk['n']) : null;
++		$e = is_string($jwk['e'] ?? null) ? self::base64UrlDecode($jwk['e']) : null;
++		if ($n === null || $e === null || $n === '' || $e === '') {
++			return null;
++		}
++
++		$modulus = self::derInteger($n);
++		$exponent = self::derInteger($e);
++		$rsaPublicKey = self::derSequence($modulus . $exponent);
++
++		$algorithm = self::derSequence(
++			// OID 1.2.840.113549.1.1.1 (rsaEncryption) followed by NULL parameters
++			"\x06\x09\x2a\x86\x48\x86\xf7\x0d\x01\x01\x01\x05\x00"
++		);
++		$bitString = "\x03" . self::derLength(strlen($rsaPublicKey) + 1) . "\x00" . $rsaPublicKey;
++		$subjectPublicKeyInfo = self::derSequence($algorithm . $bitString);
++
++		$pem = "-----BEGIN PUBLIC KEY-----\n"
++			. chunk_split(base64_encode($subjectPublicKeyInfo), 64, "\n")
++			. "-----END PUBLIC KEY-----\n";
++		$key = openssl_pkey_get_public($pem);
++		return $key === false ? null : $pem;
++	}
++
++	private static function derSequence(string $body): string {
++		return "\x30" . self::derLength(strlen($body)) . $body;
++	}
++
++	/** DER INTEGER: strip leading zeroes, then re-add one if the high bit would make it negative. */
++	private static function derInteger(string $bytes): string {
++		$bytes = ltrim($bytes, "\x00");
++		if ($bytes === '') {
++			$bytes = "\x00";
++		}
++		if ((ord($bytes[0]) & 0x80) !== 0) {
++			$bytes = "\x00" . $bytes;
++		}
++		return "\x02" . self::derLength(strlen($bytes)) . $bytes;
++	}
++
++	private static function derLength(int $length): string {
++		if ($length < 0x80) {
++			return chr($length);
++		}
++		$encoded = ltrim(pack('N', $length), "\x00");
++		return chr(0x80 | strlen($encoded)) . $encoded;
++	}
++
++	private static function base64UrlDecode(string $value): ?string {
++		$padded = strtr($value, '-_', '+/');
++		$remainder = strlen($padded) % 4;
++		if ($remainder !== 0) {
++			$padded .= str_repeat('=', 4 - $remainder);
++		}
++		$decoded = base64_decode($padded, true);
++		return $decoded === false ? null : $decoded;
++	}
++
++	private static function base64UrlEncode(string $value): string {
++		return rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
++	}
++}
 diff --git a/app/Models/SystemConfiguration.php b/app/Models/SystemConfiguration.php
-index a82a0da7..e1cdde34 100644
+index a82a0da7e..cc489291a 100644
 --- a/app/Models/SystemConfiguration.php
 +++ b/app/Models/SystemConfiguration.php
-@@ -26,6 +26,9 @@ declare(strict_types=1);
+@@ -17,6 +17,16 @@ declare(strict_types=1);
+  * @property string $default_user
+  * @property string $email_validation_token
+  * @property bool $force_email_validation
++ * @property string $auth_type
++ * @property string $oidc_metadata_url
++ * @property string $oidc_issuer
++ * @property string $oidc_client_id
++ * @property string $oidc_client_secret
++ * @property string $oidc_scopes
++ * @property string $oidc_remote_user_claim
++ * @property bool $oidc_auto_register
++ * @property bool $oidc_allow_insecure
++ * @property bool $oidc_logout_redirect
+  * @property-read bool $http_auth_auto_register
+  * @property-read string $http_auth_auto_register_email_field
+  * @property string $language
+@@ -26,6 +36,9 @@ declare(strict_types=1);
   * @property-read string $meta_description
   * @property-read int $nb_parallel_refresh
   * @property-read bool $pubsubhubbub_enabled
@@ -72,10 +1036,18 @@ index a82a0da7..e1cdde34 100644
   * @property-read bool $simplepie_syslog_enabled
   * @property-read bool $suppress_csp_warning
 diff --git a/app/i18n/en/admin.php b/app/i18n/en/admin.php
-index 0d2a3dd5..e2a7c87a 100644
+index 0d2a3dd5e..c34856d70 100644
 --- a/app/i18n/en/admin.php
 +++ b/app/i18n/en/admin.php
-@@ -81,6 +81,7 @@ return array(
+@@ -17,6 +17,7 @@ return array(
+ 		'api_enabled' => 'Allow <abbr>API</abbr> access <small>(required for mobile apps and sharing user queries)</small>',
+ 		'form' => 'Web form (traditional, requires JavaScript)',
+ 		'http' => 'HTTP (advanced: managed by Web server, OIDC, SSO…)',
++		'oidc' => 'OpenID Connect (handled by FreshRSS itself)',
+ 		'none' => 'None (dangerous)',
+ 		'title' => 'Authentication',
+ 		'token' => 'Master authentication token',
+@@ -81,6 +82,7 @@ return array(
  		'auto-update-url' => 'Auto-update server URL',
  		'base-url' => array(
  			'_' => 'Base URL',
@@ -83,7 +1055,7 @@ index 0d2a3dd5..e2a7c87a 100644
  			'recommendation' => 'Automatic recommendation: <kbd>%s</kbd>',
  		),
  		'closed_registration_message' => 'Message if registrations are closed',
-@@ -120,6 +121,10 @@ return array(
+@@ -120,6 +122,10 @@ return array(
  			'enabled' => '<a href="./?a=tos">is enabled</a>',
  			'help' => 'How to <a href="https://freshrss.github.io/FreshRSS/en/admins/12_User_management.html#enable-terms-of-service-tos" target="_blank">enable the Terms of Service</a>',
  		),
@@ -94,8 +1066,82 @@ index 0d2a3dd5..e2a7c87a 100644
  		'websub' => array(
  			'help' => 'About <a href="https://freshrss.github.io/FreshRSS/en/users/WebSub.html" target="_blank">WebSub</a>',
  		),
+diff --git a/app/i18n/en/feedback.php b/app/i18n/en/feedback.php
+index 26ba40912..ce0b87fe8 100644
+--- a/app/i18n/en/feedback.php
++++ b/app/i18n/en/feedback.php
+@@ -25,6 +25,11 @@ return array(
+ 		),
+ 	),
+ 	'auth' => array(
++		'oidc' => array(
++			'misconfigured' => 'OpenID Connect is the configured login method, but it is not configured: set the provider metadata URL, the client id and the client secret.',
++			'provider' => 'The identity provider could not be reached. Try again in a moment.',
++			'refused' => 'The identity provider refused the sign-in.',
++		),
+ 		'login' => array(
+ 			'invalid' => 'Login is invalid',
+ 			'success' => 'You are connected',
+diff --git a/app/i18n/en/gen.php b/app/i18n/en/gen.php
+index 2606ee1fb..83230d045 100644
+--- a/app/i18n/en/gen.php
++++ b/app/i18n/en/gen.php
+@@ -57,6 +57,10 @@ return array(
+ 		'keep_logged_in' => 'Keep me logged in <small>(%s days)</small>',
+ 		'login' => 'Login',
+ 		'logout' => 'Logout',
++		'oidc' => array(
++			'help' => 'You will be redirected to your identity provider. Your FreshRSS account is the name it reports.',
++			'sign_in' => 'Sign in with your identity provider',
++		),
+ 		'password' => array(
+ 			'_' => 'Password',
+ 			'format' => '<small>At least 7 characters</small>',
+diff --git a/app/i18n/zh-CN/admin.php b/app/i18n/zh-CN/admin.php
+index f870258ab..66d5ca8b7 100644
+--- a/app/i18n/zh-CN/admin.php
++++ b/app/i18n/zh-CN/admin.php
+@@ -17,6 +17,7 @@ return array(
+ 		'api_enabled' => '允许 <abbr>API</abbr> 访问 <small>（用于手机应用和分享用户查询）</small>',
+ 		'form' => '网页表单（传统方式, 需要 JavaScript)',
+ 		'http' => 'HTTP（高级：由 Web 服务器、OIDC、SSO 管理…）',
++		'oidc' => 'OpenID Connect（由 FreshRSS 自身处理）',
+ 		'none' => '无（危险）',
+ 		'title' => '认证',
+ 		'token' => '主验证 token',
+diff --git a/app/i18n/zh-CN/feedback.php b/app/i18n/zh-CN/feedback.php
+index 62f1a4694..a4dc58164 100644
+--- a/app/i18n/zh-CN/feedback.php
++++ b/app/i18n/zh-CN/feedback.php
+@@ -25,6 +25,11 @@ return array(
+ 		),
+ 	),
+ 	'auth' => array(
++		'oidc' => array(
++			'misconfigured' => '当前登录方式为 OpenID Connect，但尚未配置：请设置提供方元数据地址、客户端 ID 与客户端密钥。',
++			'provider' => '无法连接身份提供方，请稍后重试。',
++			'refused' => '身份提供方拒绝了本次登录。',
++		),
+ 		'login' => array(
+ 			'invalid' => '用户名或密码无效',
+ 			'success' => '登录成功',
+diff --git a/app/i18n/zh-CN/gen.php b/app/i18n/zh-CN/gen.php
+index 8f18a49e4..0c9b71fe1 100644
+--- a/app/i18n/zh-CN/gen.php
++++ b/app/i18n/zh-CN/gen.php
+@@ -57,6 +57,10 @@ return array(
+ 		'keep_logged_in' => '<small>%s</small> 天内保持登录',
+ 		'login' => '登录',
+ 		'logout' => '登出',
++		'oidc' => array(
++			'help' => '将跳转到你的身份提供方。FreshRSS 账号使用它返回的用户名。',
++			'sign_in' => '使用身份提供方登录',
++		),
+ 		'password' => array(
+ 			'_' => '密码',
+ 			'format' => '<small>至少 7 个字符</small>',
 diff --git a/app/install.php b/app/install.php
-index ee9b28ef..db5f35f5 100644
+index ee9b28efb..fd5630ace 100644
 --- a/app/install.php
 +++ b/app/install.php
 @@ -126,8 +126,19 @@ function saveStep2(): void {
@@ -120,7 +1166,46 @@ index ee9b28ef..db5f35f5 100644
  		$config_array = [
  			'salt' => generateSalt(),
  			'base_url' => $base_url,
-@@ -781,6 +792,7 @@ if (_t('gen.dir') === 'rtl') {
+@@ -204,7 +215,7 @@ function saveStep3(): bool {
+ 
+ 	if (!empty($_POST)) {
+ 		$auth_type = param('auth_type', 'form');
+-		if (in_array($auth_type, ['form', 'http_auth', 'none'], true)) {
++		if (in_array($auth_type, ['form', 'http_auth', 'none', FreshRSS_Oidc::AUTH_TYPE], true)) {
+ 			FreshRSS_Context::systemConf()->auth_type = $auth_type;
+ 			Minz_Session::_param('auth_type', FreshRSS_Context::systemConf()->auth_type);
+ 		} else {
+@@ -215,6 +226,11 @@ function saveStep3(): bool {
+ 		if (FreshRSS_Context::systemConf()->auth_type === 'form' && $password_plain == '') {
+ 			return false;
+ 		}
++		if (FreshRSS_Context::systemConf()->auth_type === FreshRSS_Oidc::AUTH_TYPE && $password_plain === '') {
++			// The account authenticates through the provider; this local password is random and
++			// never disclosed, so it cannot be used to bypass the provider.
++			$password_plain = bin2hex(random_bytes(32));
++		}
+ 
+ 		if (FreshRSS_user_Controller::checkUsername(param('default_user', ''))) {
+ 			FreshRSS_Context::systemConf()->default_user = param('default_user', '');
+@@ -649,7 +665,7 @@ function printStep2(): void {
+ }
+ 
+ function no_auth(string $auth_type): bool {
+-	return !in_array($auth_type, ['form', 'http_auth', 'none'], true);
++	return !in_array($auth_type, ['form', 'http_auth', 'none', FreshRSS_Oidc::AUTH_TYPE], true);
+ }
+ 
+ /* Create default user */
+@@ -686,6 +702,8 @@ function printStep3(): void {
+ 							<?= _t('admin.auth.http') ?> (REMOTE_USER = '<?= FreshRSS_http_Util::httpAuthUser(false) ?>')</option>
+ 					<option value="none"<?= $auth_type === 'none' || (no_auth($auth_type) && !FreshRSS_password_Util::cryptAvailable()) ? ' selected="selected"' : ''
+ 						?>><?= _t('admin.auth.none') ?></option>
++					<option value="oidc"<?= $auth_type === FreshRSS_Oidc::AUTH_TYPE ? ' selected="selected"' : ''
++						?>><?= _t('admin.auth.oidc') ?></option>
+ 				</select>
+ 			</div>
+ 		</div>
+@@ -781,6 +799,7 @@ if (_t('gen.dir') === 'rtl') {
  		<link rel="shortcut icon" id="favicon" type="image/x-icon" sizes="16x16 64x64" href="../favicon.ico" />
  		<link rel="icon msapplication-TileImage apple-touch-icon" type="image/png" sizes="256x256" href="../themes/icons/favicon-256.png" />
  		<link rel="apple-touch-icon" href="../themes/icons/apple-touch-icon.png" />
@@ -128,8 +1213,21 @@ index ee9b28ef..db5f35f5 100644
  		<meta name="apple-mobile-web-app-capable" content="yes" />
  		<meta name="apple-mobile-web-app-status-bar-style" content="black" />
  		<meta name="apple-mobile-web-app-title" content="FreshRSS">
+diff --git a/app/layout/header.phtml b/app/layout/header.phtml
+index 0bad9bc70..fe9c835ee 100644
+--- a/app/layout/header.phtml
++++ b/app/layout/header.phtml
+@@ -65,7 +65,7 @@
+ 					</div>
+ 					<ul>
+ 						<li class="item"><a href="<?= _url('user', 'profile') ?>"><?= _t('gen.menu.user_profile') ?></a></li>
+-						<?php if (FreshRSS_Auth::accessNeedsAction()): ?>
++						<?php if (FreshRSS_Auth::accessNeedsAction() || FreshRSS_Context::systemConf()->auth_type === FreshRSS_Oidc::AUTH_TYPE): ?>
+ 						<li class="item">
+ 							<form method="POST">
+ 								<input type="hidden" name="_csrf" value="<?= FreshRSS_Auth::csrfToken() ?>" />
 diff --git a/app/layout/layout.phtml b/app/layout/layout.phtml
-index aea36e75..eb32f35f 100644
+index aea36e75a..eb32f35f0 100644
 --- a/app/layout/layout.phtml
 +++ b/app/layout/layout.phtml
 @@ -39,6 +39,7 @@
@@ -140,8 +1238,36 @@ index aea36e75..eb32f35f 100644
  		<meta name="apple-mobile-web-app-capable" content="yes" />
  		<meta name="apple-mobile-web-app-status-bar-style" content="black" />
  		<meta name="apple-mobile-web-app-title" content="<?= FreshRSS_Context::systemConf()->title ?>">
+diff --git a/app/views/auth/oidc.phtml b/app/views/auth/oidc.phtml
+new file mode 100644
+index 000000000..003cdecf2
+--- /dev/null
++++ b/app/views/auth/oidc.phtml
+@@ -0,0 +1,22 @@
++<?php
++	declare(strict_types=1);
++	/** @var FreshRSS_View $this */
++?>
++<main class="prompt">
++	<h1><?= _t('gen.auth.login') ?></h1>
++
++	<p><?= _t('gen.auth.oidc.help') ?></p>
++
++	<form method="get" action="<?= _url('auth', 'oidc') ?>">
++		<input type="hidden" name="c" value="auth" />
++		<input type="hidden" name="a" value="oidc" />
++		<input type="hidden" name="start" value="1" />
++		<div class="form-group form-group-actions">
++			<button type="submit" class="btn btn-important"><?= _t('gen.auth.oidc.sign_in') ?></button>
++		</div>
++	</form>
++</main>
++
++<footer class="main-footer">
++	<a href="<?= _url('index', 'about') ?>"><?= _t('gen.freshrss.about') ?></a>
++</footer>
 diff --git a/app/views/configure/privacy.phtml b/app/views/configure/privacy.phtml
-index 1c03cf16..fc0abf0c 100644
+index 1c03cf162..fc0abf0c3 100644
 --- a/app/views/configure/privacy.phtml
 +++ b/app/views/configure/privacy.phtml
 @@ -2,11 +2,13 @@
@@ -163,7 +1289,7 @@ index 1c03cf16..fc0abf0c 100644
  ?>
  
 diff --git a/app/views/configure/system.phtml b/app/views/configure/system.phtml
-index 5b6c4dd5..03edd6f4 100644
+index 5b6c4dd5c..03edd6f4f 100644
 --- a/app/views/configure/system.phtml
 +++ b/app/views/configure/system.phtml
 @@ -20,16 +20,25 @@
@@ -195,7 +1321,7 @@ index 5b6c4dd5..03edd6f4 100644
  					<p class="help"><?= _i('help') ?> <?= _t('admin.system.sensitive-parameter') ?></p>
  			</div>
 diff --git a/app/views/helpers/javascript_vars.phtml b/app/views/helpers/javascript_vars.phtml
-index 822d1011..b1ba86f5 100644
+index 822d1011c..b1ba86f50 100644
 --- a/app/views/helpers/javascript_vars.phtml
 +++ b/app/views/helpers/javascript_vars.phtml
 @@ -9,7 +9,16 @@ echo json_encode([
@@ -216,8 +1342,21 @@ index 822d1011..b1ba86f5 100644
  		'auto_remove_article' => !!FreshRSS_Context::isAutoRemoveAvailable(),
  		'hide_posts' => !(FreshRSS_Context::userConf()->display_posts || Minz_Request::actionName() === 'reader'),
  		'display_order' => Minz_Request::paramString('order') ?: FreshRSS_Context::userConf()->sort_order,
+diff --git a/app/views/user/profile.phtml b/app/views/user/profile.phtml
+index 85a2b27d6..17a0c716b 100644
+--- a/app/views/user/profile.phtml
++++ b/app/views/user/profile.phtml
+@@ -38,7 +38,7 @@
+ 			</div>
+ 		</div>
+ 
+-		<?php if (FreshRSS_Auth::accessNeedsAction()) { ?>
++		<?php if (FreshRSS_Auth::accessNeedsAction() || FreshRSS_Context::systemConf()->auth_type === FreshRSS_Oidc::AUTH_TYPE) { ?>
+ 		<div class="form-group">
+ 			<label class="group-name" for="token"><?= _t('admin.auth.token') ?></label>
+ 			<?php $token = FreshRSS_Context::userConf()->token; ?>
 diff --git a/cli/do-install.php b/cli/do-install.php
-index e2ce250c..0394a5b9 100755
+index e2ce250cf..89380239f 100755
 --- a/cli/do-install.php
 +++ b/cli/do-install.php
 @@ -11,6 +11,7 @@ $cliOptions = new class extends CliOptionsParser {
@@ -259,6 +1398,17 @@ index e2ce250c..0394a5b9 100755
  $dbValues = [
  	'type' => $cliOptions->dbType ?? null,
  	'host' => $cliOptions->dbHost ?? null,
+@@ -119,8 +130,8 @@ foreach ($values as $name => $value) {
+ 				}
+ 				break;
+ 			case 'auth_type':
+-				if (!in_array($value, ['form', 'http_auth', 'none'], true)) {
+-					fail('FreshRSS invalid authentication method! auth_type must be one of { form, http_auth, none }');
++				if (!in_array($value, ['form', 'http_auth', 'none', FreshRSS_Oidc::AUTH_TYPE], true)) {
++					fail('FreshRSS invalid authentication method! auth_type must be one of { form, http_auth, none, oidc }');
+ 				}
+ 				break;
+ 		}
 @@ -128,7 +139,9 @@ foreach ($values as $name => $value) {
  	}
  }
@@ -271,7 +1421,7 @@ index e2ce250c..0394a5b9 100755
  }
  
 diff --git a/cli/reconfigure.php b/cli/reconfigure.php
-index d2568a92..7ce591c7 100755
+index d2568a925..4ba396859 100755
 --- a/cli/reconfigure.php
 +++ b/cli/reconfigure.php
 @@ -7,6 +7,7 @@ $cliOptions = new class extends CliOptionsParser {
@@ -298,8 +1448,23 @@ index d2568a92..7ce591c7 100755
  	'language' => $cliOptions->language ?? null,
  	'title' => $cliOptions->title ?? null,
  	'allow_anonymous' => $cliOptions->allowAnonymous ?? null,
+@@ -103,12 +106,11 @@ foreach ($values as $name => $value) {
+ 				}
+ 				break;
+ 			case 'auth_type':
+-				if (!in_array($value, ['form', 'http_auth', 'none'], true)) {
+-					fail('FreshRSS invalid authentication method! auth_type must be one of { form, http_auth, none }');
++				if (!in_array($value, ['form', 'http_auth', 'none', FreshRSS_Oidc::AUTH_TYPE], true)) {
++					fail('FreshRSS invalid authentication method! auth_type must be one of { form, http_auth, none, oidc }');
+ 				}
+ 				break;
+ 		}
+-		// @phpstan-ignore assign.propertyType
+ 		$systemConf->$name = $value;
+ 	}
+ }
 diff --git a/config.default.php b/config.default.php
-index 1a05bcdc..31e95643 100644
+index 1a05bcdc8..244697f9b 100644
 --- a/config.default.php
 +++ b/config.default.php
 @@ -18,13 +18,37 @@ return [
@@ -345,8 +1510,38 @@ index 1a05bcdc..31e95643 100644
  	# Specify address of the FreshRSS auto-update server.
  	'auto_update_url' => 'https://update.freshrss.org',
  
+@@ -63,8 +87,29 @@ return [
+ 	#	`http_auth` is an access controlled by the HTTP Web server (e.g. `/FreshRSS/p/i/.htaccess` for Apache)
+ 	#		if you use `http_auth`, remember to protect only `/FreshRSS/p/i/`,
+ 	#		and in particular not protect `/FreshRSS/p/api/` if you would like to use the API (different login system).
++	#	`oidc` is an OpenID Connect login handled by FreshRSS itself (authorization code flow with
++	#		PKCE). It needs no Apache module, works behind a proxy that strips the prefix, and reads
++	#		its settings from the `OIDC_*` environment variables first (see `oidc_*` below).
+ 	'auth_type' => 'form',
+ 
++	# OpenID Connect, used when `auth_type` is `oidc`. The environment wins over these values.
++	# The discovery document may be given directly, or derived from the issuer.
++	'oidc_metadata_url' => '',
++	'oidc_issuer' => '',
++	'oidc_client_id' => '',
++	'oidc_client_secret' => '',
++	# Space-separated scopes; `openid` is always needed.
++	'oidc_scopes' => 'openid profile email',
++	# Claim carrying the FreshRSS username (e.g. `preferred_username`, `email`, `sub`).
++	'oidc_remote_user_claim' => 'preferred_username',
++	# Create the FreshRSS account on first login. Turning this off means every account must exist first.
++	'oidc_auto_register' => true,
++	# Accept a plaintext `http://` provider. For tests and local development only: the client secret
++	# and the ID token travel over these URLs.
++	'oidc_allow_insecure' => false,
++	# Also end the session at the provider on logout (RP-initiated logout), when it advertises one.
++	'oidc_logout_redirect' => true,
++
+ 	# Whether reauthentication is required for performing sensitive actions e.g. promoting a user or applying an update
+ 	'reauth_required' => true,
+ 
 diff --git a/lib/Minz/ActionController.php b/lib/Minz/ActionController.php
-index e2fd6df8..79e4e596 100644
+index e2fd6df81..79e4e596c 100644
 --- a/lib/Minz/ActionController.php
 +++ b/lib/Minz/ActionController.php
 @@ -102,14 +102,24 @@ abstract class Minz_ActionController {
@@ -380,7 +1575,7 @@ index e2fd6df8..79e4e596 100644
  
  	/**
 diff --git a/lib/Minz/Configuration.php b/lib/Minz/Configuration.php
-index 93045996..e18d7bc2 100644
+index 930459963..e18d7bc2f 100644
 --- a/lib/Minz/Configuration.php
 +++ b/lib/Minz/Configuration.php
 @@ -3,7 +3,9 @@ declare(strict_types=1);
@@ -394,7 +1589,7 @@ index 93045996..e18d7bc2 100644
   *  connection_uri_params:string,pdo_options:array<int,int|string|bool>} $db
   * @property bool $disable_update
 diff --git a/lib/Minz/Request.php b/lib/Minz/Request.php
-index c671baba..333dbe8d 100644
+index c671baba5..4e0f9efe3 100644
 --- a/lib/Minz/Request.php
 +++ b/lib/Minz/Request.php
 @@ -309,18 +309,88 @@ class Minz_Request {
@@ -559,7 +1754,7 @@ index c671baba..333dbe8d 100644
  	}
  
  	private static function extractPort(): int {
-@@ -378,25 +480,70 @@ class Minz_Request {
+@@ -378,25 +488,70 @@ class Minz_Request {
  		return '';
  	}
  
@@ -641,7 +1836,7 @@ index c671baba..333dbe8d 100644
  	 * Resolve a hostname to its first found IP address (IPv4 or IPv6).
  	 *
 diff --git a/lib/Minz/Session.php b/lib/Minz/Session.php
-index 42c4bbeb..623df033 100644
+index 42c4bbeba..623df0336 100644
 --- a/lib/Minz/Session.php
 +++ b/lib/Minz/Session.php
 @@ -45,7 +45,11 @@ class Minz_Session {
@@ -658,7 +1853,7 @@ index 42c4bbeb..623df033 100644
  		$params['secure'] = Minz_Request::isHttps();
  		$params['httponly'] = true;
 diff --git a/lib/Minz/Url.php b/lib/Minz/Url.php
-index 5dcf70bb..4dcb9c67 100644
+index 5dcf70bbe..4dcb9c67b 100644
 --- a/lib/Minz/Url.php
 +++ b/lib/Minz/Url.php
 @@ -33,11 +33,10 @@ class Minz_Url {
@@ -677,7 +1872,7 @@ index 5dcf70bb..4dcb9c67 100644
  			if ($isArray) {
  				$url_string .= PUBLIC_TO_INDEX_PATH;
 diff --git a/p/api/pshb.php b/p/api/pshb.php
-index 4eaaf4cc..4a1c0834 100644
+index 4eaaf4cc8..4a1c08348 100644
 --- a/p/api/pshb.php
 +++ b/p/api/pshb.php
 @@ -67,6 +67,17 @@ if (empty($users)) {
@@ -699,7 +1894,7 @@ index 4eaaf4cc..4a1c0834 100644
  	$leaseSeconds = empty($_REQUEST['hub_lease_seconds']) || !is_numeric($_REQUEST['hub_lease_seconds']) ? 0 : (int)$_REQUEST['hub_lease_seconds'];
  	if ($leaseSeconds > 60) {
 diff --git a/p/scripts/extra.js b/p/scripts/extra.js
-index fe63eef7..4cbdc06b 100644
+index fe63eef7e..4cbdc06bd 100644
 --- a/p/scripts/extra.js
 +++ b/p/scripts/extra.js
 @@ -16,14 +16,25 @@ function forgetOpenCategories() {
@@ -750,7 +1945,7 @@ index fe63eef7..4cbdc06b 100644
  		setTimeout(init_extra_afterDOM, 50);
 diff --git a/p/scripts/login-watchdog.js b/p/scripts/login-watchdog.js
 new file mode 100644
-index 00000000..ea543952
+index 000000000..ea5439524
 --- /dev/null
 +++ b/p/scripts/login-watchdog.js
 @@ -0,0 +1,79 @@
@@ -834,9 +2029,239 @@ index 00000000..ea543952
 +	}
 +}());
 \ No newline at end of file
+diff --git a/tests/app/Models/OidcTest.php b/tests/app/Models/OidcTest.php
+new file mode 100644
+index 000000000..4af6dda56
+--- /dev/null
++++ b/tests/app/Models/OidcTest.php
+@@ -0,0 +1,224 @@
++<?php
++declare(strict_types=1);
++
++use PHPUnit\Framework\TestCase;
++
++/**
++ * The ID-token verifier is the security boundary of the OIDC login: everything else is plumbing.
++ *
++ * These tests build real RSA keys and sign real tokens, so they exercise the actual signature path
++ * (JWK → PEM → openssl_verify) rather than a mock of it. Each rejection case asserts one specific
++ * defence, because a verifier that merely "returns false sometimes" is not a verifier.
++ */
++final class OidcTest extends TestCase {
++
++	private static string $privateKey;
++	/** @var array<string,mixed> */
++	private static array $jwks;
++	private static string $issuer = 'https://idp.example';
++	private static string $clientId = 'freshrss';
++
++	/** @var array<string,mixed> */
++	private array $metadata;
++
++	#[\Override]
++	protected function setUp(): void {
++		if (!isset(self::$privateKey)) {
++			$key = openssl_pkey_new(['private_key_bits' => 2048, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
++			self::assertNotFalse($key);
++			openssl_pkey_export($key, $privateKeyPem);
++			self::assertIsString($privateKeyPem);
++			self::$privateKey = $privateKeyPem;
++			$details = openssl_pkey_get_details($key);
++			self::assertIsArray($details);
++			$rsa = $details['rsa'] ?? null;
++			self::assertIsArray($rsa);
++			self::$jwks = ['keys' => [[
++				'kty' => 'RSA',
++				'kid' => 'key-1',
++				'use' => 'sig',
++				'alg' => 'RS256',
++				'n' => self::base64Url(self::stringPart($rsa, 'n')),
++				'e' => self::base64Url(self::stringPart($rsa, 'e')),
++			]]];
++		}
++		$this->metadata = ['issuer' => self::$issuer];
++	}
++
++	/** @param array<mixed> $rsa */
++	private static function stringPart(array $rsa, string $key): string {
++		$value = $rsa[$key] ?? null;
++		self::assertIsString($value);
++		return $value;
++	}
++
++	private static function base64Url(string $value): string {
++		return rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
++	}
++
++	/**
++	 * @param array<string,mixed> $claims
++	 */
++	private function sign(array $claims, string $alg = 'RS256', string $kid = 'key-1', ?string $key = null): string {
++		$header = ['alg' => $alg, 'typ' => 'JWT'];
++		if ($kid !== '') {
++			$header['kid'] = $kid;
++		}
++		$signingInput = self::base64Url(json_encode($header, JSON_UNESCAPED_SLASHES) ?: '{}')
++			. '.' . self::base64Url(json_encode($claims, JSON_UNESCAPED_SLASHES) ?: '{}');
++
++		if ($alg === 'none') {
++			return $signingInput . '.';
++		}
++		$signature = '';
++		openssl_sign($signingInput, $signature, $key ?? self::$privateKey, OPENSSL_ALGO_SHA256);
++		self::assertIsString($signature);
++		return $signingInput . '.' . self::base64Url($signature);
++	}
++
++	/**
++	 * @param array<string,mixed> $overrides
++	 * @return array<string,mixed>
++	 */
++	private function claims(array $overrides = []): array {
++		return array_merge([
++			'iss' => self::$issuer,
++			'aud' => self::$clientId,
++			'sub' => 'abc123',
++			'exp' => time() + 300,
++			'iat' => time(),
++			'nonce' => 'expected-nonce',
++			'preferred_username' => 'alice',
++		], $overrides);
++	}
++
++	/**
++	 * @param array<string,mixed> $claims
++	 * @param array<string,mixed>|null $jwks
++	 * @return array<string,mixed>
++	 */
++	private function verify(array $claims, string $nonce = 'expected-nonce', ?array $jwks = null): array {
++		return FreshRSS_Oidc::verifyToken($this->sign($claims), $this->metadata, $jwks ?? self::$jwks,
++			self::$clientId, $nonce);
++	}
++
++	public function testAcceptsAValidTokenAndReturnsItsClaims(): void {
++		$claims = $this->verify($this->claims());
++		self::assertSame('alice', $claims['preferred_username']);
++		self::assertSame('abc123', $claims['sub']);
++	}
++
++	public function testRejectsATamperedPayload(): void {
++		$token = $this->sign($this->claims());
++		[$header, , $signature] = explode('.', $token);
++		$forged = self::base64Url(json_encode($this->claims(['preferred_username' => 'admin'])) ?: '{}');
++		$this->expectException(Minz_Exception::class);
++		FreshRSS_Oidc::verifyToken($header . '.' . $forged . '.' . $signature, $this->metadata, self::$jwks,
++			self::$clientId, 'expected-nonce');
++	}
++
++	public function testRejectsAlgNone(): void {
++		$this->expectException(Minz_Exception::class);
++		$this->expectExceptionMessage('algorithm');
++		FreshRSS_Oidc::verifyToken($this->sign($this->claims(), 'none'), $this->metadata, self::$jwks,
++			self::$clientId, 'expected-nonce');
++	}
++
++	/** The classic confusion attack: sign with a symmetric algorithm the verifier might treat as RSA. */
++	public function testRejectsSymmetricAlgorithm(): void {
++		$this->expectException(Minz_Exception::class);
++		$this->expectExceptionMessage('algorithm');
++		FreshRSS_Oidc::verifyToken($this->sign($this->claims(), 'HS256'), $this->metadata, self::$jwks,
++			self::$clientId, 'expected-nonce');
++	}
++
++	public function testRejectsAWrongIssuer(): void {
++		$this->expectException(Minz_Exception::class);
++		$this->expectExceptionMessage('issuer');
++		$this->verify($this->claims(['iss' => 'https://evil.example']));
++	}
++
++	public function testRejectsAWrongAudience(): void {
++		$this->expectException(Minz_Exception::class);
++		$this->expectExceptionMessage('audience');
++		$this->verify($this->claims(['aud' => 'another-client']));
++	}
++
++	public function testAcceptsAnAudienceListContainingThisClient(): void {
++		$claims = $this->verify($this->claims(['aud' => ['another-client', self::$clientId]]));
++		self::assertSame('alice', $claims['preferred_username']);
++	}
++
++	public function testRejectsAnExpiredToken(): void {
++		$this->expectException(Minz_Exception::class);
++		$this->expectExceptionMessage('expired');
++		$this->verify($this->claims(['exp' => time() - 3600]));
++	}
++
++	public function testRejectsATokenFromTheFuture(): void {
++		$this->expectException(Minz_Exception::class);
++		$this->expectExceptionMessage('future');
++		$this->verify($this->claims(['iat' => time() + 3600]));
++	}
++
++	/** The nonce is what binds a token to the login attempt that started it. */
++	public function testRejectsAMismatchedNonce(): void {
++		$this->expectException(Minz_Exception::class);
++		$this->expectExceptionMessage('nonce');
++		$this->verify($this->claims(['nonce' => 'some-other-nonce']));
++	}
++
++	public function testRejectsAnUnknownKeyId(): void {
++		$this->expectException(Minz_Exception::class);
++		$this->expectExceptionMessage('signing key');
++		FreshRSS_Oidc::verifyToken($this->sign($this->claims(), kid: 'not-published'), $this->metadata,
++			self::$jwks, self::$clientId, 'expected-nonce');
++	}
++
++	public function testSelectsTheRightKeyAmongSeveral(): void {
++		$otherKey = openssl_pkey_new(['private_key_bits' => 2048, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
++		self::assertNotFalse($otherKey);
++		$details = openssl_pkey_get_details($otherKey);
++		self::assertIsArray($details);
++		$otherRsa = $details['rsa'] ?? null;
++		self::assertIsArray($otherRsa);
++		$keys = self::$jwks['keys'] ?? null;
++		self::assertIsArray($keys);
++		$keys[] = [
++			'kty' => 'RSA',
++			'kid' => 'key-2',
++			'use' => 'sig',
++			'alg' => 'RS256',
++			'n' => self::base64Url(self::stringPart($otherRsa, 'n')),
++			'e' => self::base64Url(self::stringPart($otherRsa, 'e')),
++		];
++		$jwks = self::$jwks;
++		$jwks['keys'] = $keys;
++		// Signed by key-1 and announced as such: must verify even though another key exists.
++		$claims = $this->verify($this->claims(), jwks: $jwks);
++		self::assertSame('alice', $claims['preferred_username']);
++	}
++
++	public function testRejectsASignatureFromAnotherKey(): void {
++		$otherKey = openssl_pkey_new(['private_key_bits' => 2048, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
++		self::assertNotFalse($otherKey);
++		openssl_pkey_export($otherKey, $otherPem);
++		self::assertIsString($otherPem);
++		$this->expectException(Minz_Exception::class);
++		$this->expectExceptionMessage('signature');
++		FreshRSS_Oidc::verifyToken($this->sign($this->claims(), key: $otherPem), $this->metadata,
++			self::$jwks, self::$clientId, 'expected-nonce');
++	}
++
++	public function testRejectsATokenWithoutANonce(): void {
++		$claims = $this->claims();
++		unset($claims['nonce']);
++		$this->expectException(Minz_Exception::class);
++		$this->verify($claims);
++	}
++
++	public function testRejectsAMalformedToken(): void {
++		$this->expectException(Minz_Exception::class);
++		FreshRSS_Oidc::verifyToken('not-a-token', $this->metadata, self::$jwks, self::$clientId, 'n');
++	}
++}
 diff --git a/tests/lib/Minz/RequestTest.php b/tests/lib/Minz/RequestTest.php
 new file mode 100644
-index 00000000..b65c3401
+index 000000000..b65c34014
 --- /dev/null
 +++ b/tests/lib/Minz/RequestTest.php
 @@ -0,0 +1,243 @@
@@ -1085,7 +2510,7 @@ index 00000000..b65c3401
 +}
 diff --git a/tests/lib/Minz/UrlTest.php b/tests/lib/Minz/UrlTest.php
 new file mode 100644
-index 00000000..103d08bd
+index 000000000..103d08bd1
 --- /dev/null
 +++ b/tests/lib/Minz/UrlTest.php
 @@ -0,0 +1,249 @@

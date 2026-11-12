@@ -71,17 +71,21 @@ services:
       # like a fault, so it is silenced; set to 1 to get upstream's behaviour back.
       FRESHRSS_CSP_WARNING: ${FRESHRSS_CSP_WARNING:-0}
 
-      # --- OIDC (optional, all-or-nothing) --------------------------------------------
-      # Turning this on makes mod_auth_openidc handle every request. Register ONE redirect URI per
-      # domain in your identity provider, each being <FRESHRSS_PATH_PREFIX>/i/oidc/ :
-      #   https://a.example/rss/i/oidc/
-      #   https://b.example/rss/i/oidc/
-      # OIDC_ENABLED: '1'
+      # --- OIDC (optional) -------------------------------------------------------------
+      # Handled by FreshRSS itself: no Apache module, no `OIDC_ENABLED`. Set the provider below,
+      # then pick the method once:  docker exec freshrss php cli/reconfigure.php --auth-type oidc
+      # Register ONE redirect URI per domain, query string included:
+      #   https://a.example/rss/i/?c=auth&a=oidcCallback
+      #   https://b.example/rss/i/?c=auth&a=oidcCallback
       # OIDC_PROVIDER_METADATA_URL: https://idp.example/.well-known/openid-configuration
       # OIDC_CLIENT_ID: freshrss
       # OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
-      # OIDC_CLIENT_CRYPTO_KEY: 0123456789abcdef0123456789abcdef
-      # OIDC_SCOPES: openid profile
+      # OIDC_SCOPES: openid profile email
+      # OIDC_REMOTE_USER_CLAIM: preferred_username
+      # OIDC_AUTO_REGISTER: '1'
+      #
+      # The older Apache path (OIDC_ENABLED + mod_auth_openidc, callback <prefix>/i/oidc/) is still
+      # supported for existing deployments, but is no longer required.
 
       # --- email validation (optional) ------------------------------------------------
       # force_email_validation signs a token and mails a verification link; the account stays

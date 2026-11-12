@@ -549,21 +549,67 @@ on the headers the reverse proxy forwards.
 | OIDC on several domains | `'/rss'` | `redirect_uri` becomes `https://<domain>/rss/i/oidc/` per domain |
 | WebSub | `'/rss'` + `websub_base_url` | the hub talks to the single `websub_base_url` domain |
 
-### 4. Identity provider
+### 4. Identity provider (OpenID Connect)
 
-Register **one redirect URI per domain** (port required by Authentik):
+OIDC is handled by **FreshRSS itself** — no Apache module, no `OIDC_ENABLED`. Set the provider
+settings and pick `oidc` as the authentication method:
+
+```yaml
+environment:
+  OIDC_PROVIDER_METADATA_URL: https://idp.example/.well-known/openid-configuration
+  OIDC_CLIENT_ID: freshrss
+  OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
+  OIDC_SCOPES: openid profile email
+  # OIDC_REMOTE_USER_CLAIM: preferred_username   # which claim becomes the FreshRSS username
+  # OIDC_AUTO_REGISTER: '1'                      # create the account on first login
+```
+
+Then set the method once, on the data volume:
+
+```sh
+docker exec freshrss php cli/reconfigure.php --auth-type oidc
+```
+
+or choose *OpenID Connect* in the installation wizard.
+
+Register **one redirect URI per domain** — note the query string, which is what makes this work
+behind a prefix-stripping proxy:
 
 ```
-https://a.example:443/rss/i/oidc/
-https://b.example:443/rss/i/oidc/
+https://a.example/rss/i/?c=auth&a=oidcCallback
+https://b.example/rss/i/?c=auth&a=oidcCallback
 ```
 
-`OIDC_X_FORWARDED_HEADERS` defaults to `X-Forwarded-Host X-Forwarded-Proto X-Forwarded-Port`
-in this image (upstream leaves it unset, which breaks every reverse-proxy deployment).
+What the implementation guarantees, and why it is safe to rely on:
+
+| Property | Detail |
+|---|---|
+| Flow | authorization code + **PKCE (S256)** |
+| Token verification | **RS256 only**; `alg: none` and HS256 are refused |
+| Claims checked | `iss`, `aud`, `azp`, `exp`, `nbf`, `iat` (±120 s), `nonce` |
+| Replay | `state` is one-time and consumed before the code is exchanged |
+| Key rotation | one JWKS refetch when the key no longer matches |
+| Secrets | exchanged server-to-server; plaintext provider URLs refused unless `OIDC_ALLOW_INSECURE=1` (tests only) |
+| Second way in | disabled: no password form, no self-registration; auto-registered accounts get a random undisclosed password |
+| Logout | RP-initiated when the provider advertises `end_session_endpoint` |
+
+The password form and the registration page return 403/redirect on an OIDC instance, so the
+provider is the only way in.
 
 The session cookie stays host-only, so each domain has its own login. The **accounts are
-shared**: OIDC maps `OIDC_REMOTE_USER_CLAIM` (default `preferred_username`) to a FreshRSS user,
-and a user moving from one domain to the other is silently signed in by the IdP.
+shared**: every domain maps the same claim to the same FreshRSS user, so a user moving from one
+domain to the other is re-authenticated by the IdP and lands in the same account.
+
+#### The older Apache-module path still works
+
+`OIDC_ENABLED` and `mod_auth_openidc` are still installed and configured, for deployments that
+already use them; nothing changes for those. They are no longer needed, and the two paths are
+mutually exclusive: `OIDC_ENABLED` protects `/rss/i/` at the web-server level, while `auth_type=oidc`
+does the login inside FreshRSS. Use one or the other, not both.
+
+For that legacy path the redirect URI is `https://a.example/rss/i/oidc/` instead, and it cannot work
+behind a proxy that strips the prefix (`mod_auth_openidc` compares the path Apache sees with
+`strcmp`).
 
 ---
 
@@ -575,7 +621,15 @@ and a user moving from one domain to the other is silently signed in by the IdP.
 | `FRESHRSS_BASE_URL` | *(empty)* | pin the base URL; wins over `data/config.php`. Full URL = one domain, path = host follows the request |
 | `FRESHRSS_WEBSUB_BASE_URL` | *(empty)* | address advertised to WebSub hubs; wins over `websub_base_url` |
 | `TRUSTED_PROXY` | *(empty)* | proxy ranges allowed to send identity headers (`X-WebAuth-User` / `X-Remote-User`); OIDC / SSO only. It does **not** recover the client address — FreshRSS reads `CONN_REMOTE_ADDR` only |
-| `OIDC_ENABLED` | *(empty)* | any non-zero value activates OIDC |
+| `OIDC_ENABLED` | *(empty)* | legacy: any non-zero value activates the Apache `mod_auth_openidc` path. **Not needed** for the built-in OIDC login, which uses `auth_type=oidc` |
+| `OIDC_PROVIDER_METADATA_URL` | *(empty)* | built-in OIDC: discovery document, e.g. `https://idp.example/.well-known/openid-configuration` |
+| `OIDC_ISSUER` | *(empty)* | alternative to the metadata URL; the discovery document is derived from it |
+| `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | *(empty)* | built-in OIDC client credentials |
+| `OIDC_SCOPES` | `openid profile email` | built-in OIDC scopes |
+| `OIDC_REMOTE_USER_CLAIM` | `preferred_username` | which claim becomes the FreshRSS username |
+| `OIDC_AUTO_REGISTER` | `1` | create the FreshRSS account on first login |
+| `OIDC_LOGOUT_REDIRECT` | `1` | also end the provider session on logout |
+| `OIDC_ALLOW_INSECURE` | `0` | allow an `http://` provider — tests/local development only |
 | `FRESHRSS_CSP_WARNING` | `0` | set to `1` to restore FreshRSS's "unsafe-eval" notice on admin pages. It is silenced by default: the policy forbids `unsafe-eval` on purpose and no shipped script needs it, so the notice only ever looked like a fault |
 | `FRESHRSS_CSP_SCRIPT_SRC` | *(empty)* | value for `script-src`, overriding `default-src` for scripts only. Needed to let a third party injected at the edge — Cloudflare Browser Insights — actually load |
 | `CRON_MIN` | `7,37 * * * *` | feed refresh schedule — a **whole** crontab expression, not just the minutes: every 30 minutes is `*/30 * * * *`. A shorter value is completed with `* * * *`. |

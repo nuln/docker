@@ -1281,6 +1281,70 @@ docker rm -f frss-hosts >/dev/null 2>&1
 rm -rf "$DATA_H" 2>/dev/null || true
 
 echo
+echo "== 5j. OIDC handled by FreshRSS itself, with no Apache module =="
+# This instance is deliberately *not* given `OIDC_ENABLED`: mod_auth_openidc therefore stays
+# inactive, and everything below is done by the PHP implementation. The provider name resolves
+# inside the container, and the flow is driven from there, which is what a browser does through
+# the public domain.
+DATA_P="$(mktemp -d)"
+OIDCP_PORT=18119
+docker rm -f frss-oidcphp >/dev/null 2>&1
+docker run -d --name frss-oidcphp --network "$NET" -p "${OIDCP_PORT}:80" \
+	-e "FRESHRSS_PATH_PREFIX=${PREFIX}" \
+	-e "OIDC_PROVIDER_METADATA_URL=http://${IDP}/.well-known/openid-configuration" \
+	-e 'OIDC_CLIENT_ID=freshrss' \
+	-e 'OIDC_CLIENT_SECRET=test-secret' \
+	-e 'OIDC_ALLOW_INSECURE=1' \
+	-e 'FRESHRSS_WEBSUB_BASE_URL=https://rss.example.net/rss' \
+	-v "${DATA_P}:/var/www/FreshRSS/data" "$IMAGE" >/dev/null
+wait_http "http://127.0.0.1:${OIDCP_PORT}${PREFIX}/i/?step=1" || true
+docker exec frss-oidcphp php /var/www/FreshRSS/cli/do-install.php \
+	--default-user alice --db-type sqlite --db-base /var/www/FreshRSS/data/db.sqlite \
+	--auth-type oidc >/dev/null 2>&1 || true
+# The web wizard creates the default account; the CLI equivalent is create-user. Its password is
+# never used for an OIDC account — the provider is the only way in.
+docker exec frss-oidcphp php /var/www/FreshRSS/cli/create-user.php \
+	--user alice --password 'unused-password' >/dev/null 2>&1 || true
+docker exec frss-oidcphp sh -c 'chown -R :www-data /var/www/FreshRSS/data; chmod -R g+rwX /var/www/FreshRSS/data'
+sleep 1
+
+# Restart the provider as a different user: alice is the default account, so bob must be created by
+# the first login. That also exercises automatic registration, which the wizard path cannot show.
+docker rm -f mock-idp >/dev/null 2>&1
+docker run -d --name mock-idp --network "$NET" --network-alias idp -p "${IDP_PORT}:9500" \
+	-e OIDC_MOCK_USER=bob \
+	-v "${IDP_STATE}":/srv php:8.3-cli php -S 0.0.0.0:9500 -t /srv /srv/index.php >/dev/null
+for _ in $(seq 30); do
+	case "$(get "http://127.0.0.1:${IDP_PORT}/.well-known/openid-configuration")" in *issuer*) break;; esac
+	sleep 1
+done
+
+docker cp "${SCRIPT_DIR}/oidc-php-flow.php" frss-oidcphp:/tmp/oidc-php-flow.php
+flow="$(docker exec frss-oidcphp php /tmp/oidc-php-flow.php "http://127.0.0.1" "$PREFIX" replay 2>&1 || true)"
+flow_json="$(mktemp)"
+printf '%s' "$flow" > "$flow_json"
+jget() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$flow_json" "$1" 2>/dev/null || echo "<missing>"; }
+
+is "the login page offers the provider, and no password form" "$(jget signin_page)" "True"
+is "starting the flow redirects to the provider"              "$(jget authorize_status)" "303"
+has "…using PKCE"                                             "$(jget authorize_location)" "code_challenge_method=S256"
+has "…and announcing the prefixed callback"                   "$(jget authorize_location)" "oidcCallback"
+# `FRESHRSS_WEBSUB_BASE_URL` is set above on purpose: it is pinned to one domain, and the OIDC
+# redirect must NOT follow it, or every domain's login would be sent to that one host.
+has "…from the domain in use, not the pinned WebSub host"     "$(jget authorize_location)" "redirect_uri=http%3A%2F%2F127.0.0.1"
+hasnt "…and never from the WebSub host"                       "$(jget authorize_location)" "rss.example.net"
+is "the callback establishes a session"                       "$(jget callback_status)" "302"
+is "the session is authenticated"                             "$(jget logged_in)" "True"
+is "replaying the same callback is refused"                   "$(jget replay_status)" "403"
+is "logout ends the local session"                            "$(jget session_after_logout)" "False"
+is "…redirecting to the provider end-session endpoint"        "$(jget logout_status)" "303"
+has "…with a post-logout redirect"                            "$(jget logout_location)" "post_logout_redirect_uri="
+is "the first login registered the new account" \
+	"$(docker exec frss-oidcphp php /var/www/FreshRSS/cli/list-users.php 2>/dev/null | grep -c '^bob$')" "1"
+rm -f "$flow_json"
+docker rm -f frss-oidcphp >/dev/null 2>&1
+rm -rf "$DATA_P" 2>/dev/null || true
+
 echo "== 6. domain-root deployment keeps upstream behaviour"
 ru=$(header -H 'Host: a.example' -H 'X-Forwarded-Host: a.example' -H 'X-Forwarded-Proto: https' \
 	"http://127.0.0.1:${HTTPS_PORT}/i/?c=auth&a=login" | tr -d '\r' | sed -n 's/^[Ll]ocation: //p' \
