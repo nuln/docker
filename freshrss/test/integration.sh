@@ -45,7 +45,7 @@ pass=0
 fail=0
 
 cleanup() {
-	docker rm -f frss-sub frss-root frss-oidc frss-oidc2 frss-env frss-env2 frss-strip frss-wsub frss-wsub2 frss-cli frss-i mock-idp websub-hub publisher smtp-sink frss-mail frss-hosts >/dev/null 2>&1 || true
+	docker rm -f frss-sub frss-root frss-oidc frss-oidc2 frss-env frss-env2 frss-strip frss-wsub frss-wsub2 frss-cli frss-i mock-idp mock-idp-b websub-hub publisher smtp-sink frss-mail frss-hosts frss-oidcphp frss-oidcmulti >/dev/null 2>&1 || true
 	docker network rm "$NET" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -1344,6 +1344,64 @@ is "the first login registered the new account" \
 rm -f "$flow_json"
 docker rm -f frss-oidcphp >/dev/null 2>&1
 rm -rf "$DATA_P" 2>/dev/null || true
+
+echo "== 5k. one instance, two domains, two identity providers =="
+# `a.example` and `b.example` are each redirected to *their own* provider: the map is keyed by the
+# host, and the redirect URI names that same host. Driven with Host headers, which resolve to the
+# instance itself inside the container.
+IDP_B_STATE="$(mktemp -d)"
+cp "${SCRIPT_DIR}/mock-idp.php" "${IDP_B_STATE}/index.php"
+docker rm -f mock-idp-b >/dev/null 2>&1
+docker run -d --name mock-idp-b --network "$NET" --network-alias idp-b \
+	-e IDP_ISSUER_HOST=idp-b -e OIDC_MOCK_USER=carol \
+	-v "${IDP_B_STATE}":/srv php:8.3-cli php -S 0.0.0.0:9500 -t /srv /srv/index.php >/dev/null
+for _ in $(seq 30); do
+	case "$(get "http://127.0.0.1:${IDP_PORT}/.well-known/openid-configuration")" in *issuer*) break;; esac
+	sleep 1
+done
+
+DATA_M="$(mktemp -d)"
+MULTI_PORT=18120
+docker rm -f frss-oidcmulti >/dev/null 2>&1
+docker run -d --name frss-oidcmulti --network "$NET" -p "${MULTI_PORT}:80" \
+	--add-host a.example:127.0.0.1 --add-host b.example:127.0.0.1 \
+	-e "FRESHRSS_PATH_PREFIX=${PREFIX}" \
+	-e 'OIDC_PROVIDERS={"a.example":{"metadata_url":"http://idp:9500/.well-known/openid-configuration","client_id":"client-a","client_secret":"test-secret"},"b.example":{"issuer":"http://idp-b:9500","client_id":"client-b","client_secret":"test-secret"}}' \
+	-e 'OIDC_ALLOW_INSECURE=1' \
+	-v "${DATA_M}:/var/www/FreshRSS/data" "$IMAGE" >/dev/null
+wait_http "http://127.0.0.1:${MULTI_PORT}${PREFIX}/i/?step=1" || true
+docker exec frss-oidcmulti php /var/www/FreshRSS/cli/do-install.php \
+	--default-user alice --db-type sqlite --db-base /var/www/FreshRSS/data/db.sqlite \
+	--auth-type oidc >/dev/null 2>&1 || true
+docker exec frss-oidcmulti php /var/www/FreshRSS/cli/create-user.php \
+	--user alice --password 'unused-password' >/dev/null 2>&1 || true
+docker exec frss-oidcmulti sh -c 'chown -R :www-data /var/www/FreshRSS/data; chmod -R g+rwX /var/www/FreshRSS/data'
+docker cp "${SCRIPT_DIR}/oidc-php-flow.php" frss-oidcmulti:/tmp/oidc-php-flow.php
+sleep 1
+
+flow_a="$(docker exec frss-oidcmulti php /tmp/oidc-php-flow.php 'http://a.example' "$PREFIX" 2>&1 || true)"
+flow_b="$(docker exec frss-oidcmulti php /tmp/oidc-php-flow.php 'http://b.example' "$PREFIX" 2>&1 || true)"
+json_a="$(mktemp)"; json_b="$(mktemp)"
+printf '%s' "$flow_a" > "$json_a"
+printf '%s' "$flow_b" > "$json_b"
+jget_a() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$json_a" "$1" 2>/dev/null || echo "<missing>"; }
+jget_b() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$json_b" "$1" 2>/dev/null || echo "<missing>"; }
+
+has   "a.example is redirected to its own provider"   "$(jget_a authorize_location)" "idp:9500/authorize"
+hasnt "…and not to the other domain's provider"       "$(jget_a authorize_location)" "idp-b:9500"
+has   "b.example is redirected to its own provider"   "$(jget_b authorize_location)" "idp-b:9500/authorize"
+hasnt "…and not to the other domain's provider"       "$(jget_b authorize_location)" "idp:9500/authorize"
+has   "a.example announces a.example as callback"     "$(jget_a authorize_location)" "redirect_uri=http%3A%2F%2Fa.example"
+has   "b.example announces b.example as callback"     "$(jget_b authorize_location)" "redirect_uri=http%3A%2F%2Fb.example"
+has   "a.example uses the credentials of its provider" "$(jget_a authorize_location)" "client_id=client-a"
+has   "b.example uses the credentials of its provider" "$(jget_b authorize_location)" "client_id=client-b"
+is    "the first domain's login succeeds"             "$(jget_a logged_in)" "True"
+is    "the second domain's login succeeds"            "$(jget_b logged_in)" "True"
+is    "each provider's user was registered" \
+	"$(docker exec frss-oidcmulti php /var/www/FreshRSS/cli/list-users.php 2>/dev/null | sort | tr '\n' ',')" "alice,bob,carol,"
+rm -f "$json_a" "$json_b"
+docker rm -f frss-oidcmulti mock-idp-b >/dev/null 2>&1
+rm -rf "$DATA_M" "$IDP_B_STATE" 2>/dev/null || true
 
 echo "== 6. domain-root deployment keeps upstream behaviour"
 ru=$(header -H 'Host: a.example' -H 'X-Forwarded-Host: a.example' -H 'X-Forwarded-Proto: https' \

@@ -10,9 +10,11 @@ declare(strict_types=1);
 // /authorize records the parameters it was called with, so a test can assert on the redirect_uri
 // FreshRSS advertised, and /last records the last completed exchange.
 
-const ISSUER_HOST = 'idp';
-const ISSUER_PORT = 9500;
-const ISSUER = 'http://' . ISSUER_HOST . ':' . ISSUER_PORT;
+// The issuer is the provider's public identity, and it must equal the host name it is reached by.
+// It is overridable so a test can run two providers side by side on one network (one per domain).
+define('ISSUER_HOST', getenv('IDP_ISSUER_HOST') ?: 'idp');
+define('ISSUER_PORT', (int)(getenv('IDP_ISSUER_PORT') ?: 9500));
+define('ISSUER', 'http://' . ISSUER_HOST . ':' . ISSUER_PORT);
 
 $dir = __DIR__ . '/idp-state';
 $keyFile = $dir . '/rsa.pem';

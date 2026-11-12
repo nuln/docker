@@ -600,6 +600,45 @@ The session cookie stays host-only, so each domain has its own login. The **acco
 shared**: every domain maps the same claim to the same FreshRSS user, so a user moving from one
 domain to the other is re-authenticated by the IdP and lands in the same account.
 
+#### One identity provider per domain
+
+One metadata URL covers a single provider. When **each domain has its own** — `auth.a.example` for
+`a.example`, `auth.b.example` for `b.example` — map the host to its provider. Top-level `OIDC_*`
+values stay the default, so an entry only states what differs:
+
+```yaml
+environment:
+  OIDC_PROVIDERS: |
+    {
+      "a.example": {
+        "metadata_url": "https://auth.a.example/.well-known/openid-configuration",
+        "client_id": "freshrss-a",
+        "client_secret": "…"
+      },
+      "b.example": {
+        "issuer": "https://auth.b.example",
+        "client_id": "freshrss-b",
+        "client_secret": "…"
+      }
+    }
+```
+
+- the **host** selects the provider: `a.example` is redirected to `auth.a.example`, `b.example` to
+  `auth.b.example`, each with its own client id and its own callback
+- `issuer` is shorthand for the discovery URL; an explicit `metadata_url` wins
+- scopes, claim and the other flags are inherited unless the entry overrides them
+- a `"*"` entry covers hosts that are not listed
+- `data/config.php` accepts the same map as `'oidc_providers' => [...]` if you prefer the data volume
+
+Register both callbacks, one at each provider:
+
+```
+https://a.example/rss/i/?c=auth&a=oidcCallback     # at auth.a.example
+https://b.example/rss/i/?c=auth&a=oidcCallback     # at auth.b.example
+```
+
+The metadata and JWKS caches are keyed by provider, so two providers never answer for each other.
+
 #### The older Apache-module path still works
 
 `OIDC_ENABLED` and `mod_auth_openidc` are still installed and configured, for deployments that
@@ -628,6 +667,7 @@ behind a proxy that strips the prefix (`mod_auth_openidc` compares the path Apac
 | `OIDC_SCOPES` | `openid profile email` | built-in OIDC scopes |
 | `OIDC_REMOTE_USER_CLAIM` | `preferred_username` | which claim becomes the FreshRSS username |
 | `OIDC_AUTO_REGISTER` | `1` | create the FreshRSS account on first login |
+| `OIDC_PROVIDERS` | *(empty)* | JSON map of `host` → provider settings, for one provider per domain; unlisted hosts use the top-level `OIDC_*` values |
 | `OIDC_LOGOUT_REDIRECT` | `1` | also end the provider session on logout |
 | `OIDC_ALLOW_INSECURE` | `0` | allow an `http://` provider — tests/local development only |
 | `FRESHRSS_CSP_WARNING` | `0` | set to `1` to restore FreshRSS's "unsafe-eval" notice on admin pages. It is silenced by default: the policy forbids `unsafe-eval` on purpose and no shipped script needs it, so the notice only ever looked like a fault |

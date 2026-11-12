@@ -347,10 +347,10 @@ index f00456666..b7fe4ab30 100644
  				return false;
 diff --git a/app/Models/Oidc.php b/app/Models/Oidc.php
 new file mode 100644
-index 000000000..3597d89e0
+index 000000000..7f8439a0c
 --- /dev/null
 +++ b/app/Models/Oidc.php
-@@ -0,0 +1,653 @@
+@@ -0,0 +1,756 @@
 +<?php
 +declare(strict_types=1);
 +
@@ -399,6 +399,78 @@ index 000000000..3597d89e0
 +	 *               claim:string,auto_register:bool,allow_insecure:bool,logout_redirect:bool}
 +	 */
 +	public static function config(): array {
++		return self::providerForHost(self::currentHost());
++	}
++
++	/**
++	 * The provider to use for a given host.
++	 *
++	 * One instance can serve several domains, and each domain may sit behind its **own** identity
++	 * provider. `OIDC_PROVIDERS` (JSON) or `oidc_providers` in `data/config.php` maps a host to
++	 * provider settings; anything not listed falls back to the top-level `OIDC_*` values, so a
++	 * single-provider deployment needs no map at all.
++	 *
++	 * @return array{metadata_url:string,client_id:string,client_secret:string,scopes:string,
++	 *               claim:string,auto_register:bool,allow_insecure:bool,logout_redirect:bool}
++	 */
++	public static function providerForHost(string $host): array {
++		return self::selectProvider(self::defaultProvider(), self::providerOverrides(), $host);
++	}
++
++	/**
++	 * Merge the settings of one host over the defaults.
++	 *
++	 * Pure and static so the selection can be tested without a request or a configuration file.
++	 * Only a host that is present in the map can change the provider: the `Host` header never
++	 * becomes a URL by itself, so a forged header can at most select a provider the administrator
++	 * already configured.
++	 *
++	 * @param array{metadata_url:string,client_id:string,client_secret:string,scopes:string,
++	 *              claim:string,auto_register:bool,allow_insecure:bool,logout_redirect:bool} $default
++	 * @param array<string,array<string,mixed>> $overrides host, or `*`, to partial provider settings
++	 * @return array{metadata_url:string,client_id:string,client_secret:string,scopes:string,
++	 *               claim:string,auto_register:bool,allow_insecure:bool,logout_redirect:bool}
++	 */
++	public static function selectProvider(array $default, array $overrides, string $host): array {
++		$host = strtolower(trim($host));
++		// A Host header may carry a port; the map is keyed by name only.
++		if (str_contains($host, ':') && !str_starts_with($host, '[')) {
++			$host = substr($host, 0, (int)strrpos($host, ':'));
++		}
++		$entry = [];
++		if (isset($overrides[$host]) && is_array($overrides[$host])) {
++			$entry = $overrides[$host];
++		} elseif (isset($overrides['*']) && is_array($overrides['*'])) {
++			$entry = $overrides['*'];
++		}
++
++		$provider = $default;
++		// `issuer` is a shorthand for the discovery URL; an explicit metadata_url still wins.
++		$issuer = is_string($entry['issuer'] ?? null) ? $entry['issuer'] : '';
++		if ($issuer !== '') {
++			$provider['metadata_url'] = rtrim($issuer, '/') . '/.well-known/openid-configuration';
++		}
++		foreach (['metadata_url', 'client_id', 'client_secret', 'scopes', 'claim'] as $key) {
++			$value = $entry[$key] ?? null;
++			if (is_string($value) && $value !== '') {
++				$provider[$key] = $value;
++			}
++		}
++		foreach (['auto_register', 'allow_insecure', 'logout_redirect'] as $key) {
++			if (isset($entry[$key])) {
++				$provider[$key] = (bool)$entry[$key];
++			}
++		}
++		return $provider;
++	}
++
++	/**
++	 * The top-level provider, used for any host without an entry of its own.
++	 *
++	 * @return array{metadata_url:string,client_id:string,client_secret:string,scopes:string,
++	 *               claim:string,auto_register:bool,allow_insecure:bool,logout_redirect:bool}
++	 */
++	private static function defaultProvider(): array {
 +		$conf = FreshRSS_Context::systemConf();
 +
 +		$metadataUrl = self::env('OIDC_PROVIDER_METADATA_URL') ?? $conf->oidc_metadata_url;
@@ -431,6 +503,31 @@ index 000000000..3597d89e0
 +			'allow_insecure' => $allowInsecure === null ? $conf->oidc_allow_insecure : $allowInsecure !== '0',
 +			'logout_redirect' => $logoutRedirect === null ? $conf->oidc_logout_redirect : $logoutRedirect !== '0',
 +		];
++	}
++
++	/**
++	 * Per-host provider overrides.
++	 *
++	 * @return array<string,array<string,mixed>>
++	 */
++	private static function providerOverrides(): array {
++		$raw = self::env('OIDC_PROVIDERS');
++		if ($raw !== null) {
++			$decoded = json_decode($raw, true);
++			if (is_array($decoded)) {
++				/** @var array<string,array<string,mixed>> $decoded */
++				return $decoded;
++			}
++			Minz_Log::warning('OIDC_PROVIDERS is not valid JSON; the per-host map is ignored');
++		}
++		$fromConf = FreshRSS_Context::systemConf()->oidc_providers;
++		return is_array($fromConf) ? $fromConf : [];
++	}
++
++	/** The host the current request was addressed to, lower-cased, without a port. */
++	private static function currentHost(): string {
++		$host = parse_url(self::publicBaseUrl(), PHP_URL_HOST);
++		return is_string($host) ? strtolower($host) : '';
 +	}
 +
 +	/** @return array{metadata_url:string,client_id:string,client_secret:string,scopes:string,
@@ -611,7 +708,7 @@ index 000000000..3597d89e0
 +			if (!str_contains($message, 'signature') && !str_contains($message, 'signing key')) {
 +				throw $e;
 +			}
-+			@unlink(self::cacheDir() . '/jwks.json');
++			@unlink(self::cachePath('jwks', $jwksUrl));
 +			Minz_Log::warning('OIDC: key check failed, refetched JWKS: ' . $message);
 +			$jwks = self::cachedJson('jwks', $jwksUrl, self::JWKS_TTL);
 +			return self::verifyToken($idToken, $metadata, $jwks, $c['client_id'], $expectedNonce);
@@ -784,7 +881,9 @@ index 000000000..3597d89e0
 +	 * @throws Minz_Exception
 +	 */
 +	private static function cachedJson(string $name, string $url, int $ttl): array {
-+		$path = self::cacheDir() . '/' . $name . '.json';
++		// Keyed by URL as well: with several providers, a shared file name would make one provider's
++		// keys answer for another's.
++		$path = self::cachePath($name, $url);
 +		$cached = self::readCached($path, $url);
 +		if ($cached !== null && time() - $cached['fetched'] <= $ttl) {
 +			return $cached['data'];
@@ -832,6 +931,10 @@ index 000000000..3597d89e0
 +
 +	private static function cacheDir(): string {
 +		return DATA_PATH . '/cache/oidc';
++	}
++
++	private static function cachePath(string $name, string $url): string {
++		return self::cacheDir() . '/' . $name . '-' . substr(sha1($url), 0, 16) . '.json';
 +	}
 +
 +	/**
@@ -1005,10 +1108,10 @@ index 000000000..3597d89e0
 +	}
 +}
 diff --git a/app/Models/SystemConfiguration.php b/app/Models/SystemConfiguration.php
-index a82a0da7e..cc489291a 100644
+index a82a0da7e..771f1fe4b 100644
 --- a/app/Models/SystemConfiguration.php
 +++ b/app/Models/SystemConfiguration.php
-@@ -17,6 +17,16 @@ declare(strict_types=1);
+@@ -17,6 +17,17 @@ declare(strict_types=1);
   * @property string $default_user
   * @property string $email_validation_token
   * @property bool $force_email_validation
@@ -1022,10 +1125,11 @@ index a82a0da7e..cc489291a 100644
 + * @property bool $oidc_auto_register
 + * @property bool $oidc_allow_insecure
 + * @property bool $oidc_logout_redirect
++ * @property array<string,array<string,mixed>> $oidc_providers
   * @property-read bool $http_auth_auto_register
   * @property-read string $http_auth_auto_register_email_field
   * @property string $language
-@@ -26,6 +36,9 @@ declare(strict_types=1);
+@@ -26,6 +37,9 @@ declare(strict_types=1);
   * @property-read string $meta_description
   * @property-read int $nb_parallel_refresh
   * @property-read bool $pubsubhubbub_enabled
@@ -1464,7 +1568,7 @@ index d2568a925..4ba396859 100755
  	}
  }
 diff --git a/config.default.php b/config.default.php
-index 1a05bcdc8..244697f9b 100644
+index 1a05bcdc8..a98f13db6 100644
 --- a/config.default.php
 +++ b/config.default.php
 @@ -18,13 +18,37 @@ return [
@@ -1510,7 +1614,7 @@ index 1a05bcdc8..244697f9b 100644
  	# Specify address of the FreshRSS auto-update server.
  	'auto_update_url' => 'https://update.freshrss.org',
  
-@@ -63,8 +87,29 @@ return [
+@@ -63,8 +87,40 @@ return [
  	#	`http_auth` is an access controlled by the HTTP Web server (e.g. `/FreshRSS/p/i/.htaccess` for Apache)
  	#		if you use `http_auth`, remember to protect only `/FreshRSS/p/i/`,
  	#		and in particular not protect `/FreshRSS/p/api/` if you would like to use the API (different login system).
@@ -1536,6 +1640,17 @@ index 1a05bcdc8..244697f9b 100644
 +	'oidc_allow_insecure' => false,
 +	# Also end the session at the provider on logout (RP-initiated logout), when it advertises one.
 +	'oidc_logout_redirect' => true,
++	# Per-host providers, for an instance served through several domains that each have their own
++	# identity provider. Keys are host names (or `*` as the fallback for unlisted hosts); values
++	# override the settings above for that host. `OIDC_PROVIDERS` (JSON) takes precedence.
++	# Example:
++	#   'oidc_providers' => [
++	#       'a.example' => ['metadata_url' => 'https://auth.a.example/.well-known/openid-configuration',
++	#                       'client_id' => 'freshrss-a', 'client_secret' => '…'],
++	#       'b.example' => ['issuer' => 'https://auth.b.example',
++	#                       'client_id' => 'freshrss-b', 'client_secret' => '…'],
++	#   ],
++	'oidc_providers' => [],
 +
  	# Whether reauthentication is required for performing sensitive actions e.g. promoting a user or applying an update
  	'reauth_required' => true,
@@ -2031,10 +2146,10 @@ index 000000000..ea5439524
 \ No newline at end of file
 diff --git a/tests/app/Models/OidcTest.php b/tests/app/Models/OidcTest.php
 new file mode 100644
-index 000000000..4af6dda56
+index 000000000..a120baf5b
 --- /dev/null
 +++ b/tests/app/Models/OidcTest.php
-@@ -0,0 +1,224 @@
+@@ -0,0 +1,293 @@
 +<?php
 +declare(strict_types=1);
 +
@@ -2257,6 +2372,75 @@ index 000000000..4af6dda56
 +	public function testRejectsAMalformedToken(): void {
 +		$this->expectException(Minz_Exception::class);
 +		FreshRSS_Oidc::verifyToken('not-a-token', $this->metadata, self::$jwks, self::$clientId, 'n');
++	}
++
++	// ---------------------------------------------------------------------------------------
++	// Per-host provider selection
++	// ---------------------------------------------------------------------------------------
++
++	/** @return array{metadata_url:string,client_id:string,client_secret:string,scopes:string,
++	 *               claim:string,auto_register:bool,allow_insecure:bool,logout_redirect:bool} */
++	private function defaultProvider(): array {
++		return [
++			'metadata_url' => 'https://auth.a.example/.well-known/openid-configuration',
++			'client_id' => 'freshrss-a',
++			'client_secret' => 'secret-a',
++			'scopes' => 'openid profile',
++			'claim' => 'preferred_username',
++			'auto_register' => true,
++			'allow_insecure' => false,
++			'logout_redirect' => true,
++		];
++	}
++
++	public function testAnUnlistedHostUsesTheDefaultProvider(): void {
++		$provider = FreshRSS_Oidc::selectProvider($this->defaultProvider(), [], 'a.example');
++		self::assertSame('https://auth.a.example/.well-known/openid-configuration', $provider['metadata_url']);
++		self::assertSame('freshrss-a', $provider['client_id']);
++	}
++
++	public function testAListedHostGetsItsOwnProvider(): void {
++		$overrides = [
++			'b.example' => [
++				'metadata_url' => 'https://auth.b.example/.well-known/openid-configuration',
++				'client_id' => 'freshrss-b',
++				'client_secret' => 'secret-b',
++			],
++		];
++		$provider = FreshRSS_Oidc::selectProvider($this->defaultProvider(), $overrides, 'b.example');
++		self::assertSame('https://auth.b.example/.well-known/openid-configuration', $provider['metadata_url']);
++		self::assertSame('freshrss-b', $provider['client_id']);
++		self::assertSame('secret-b', $provider['client_secret']);
++		// Settings the override does not mention are inherited, so only what differs has to be written.
++		self::assertSame('openid profile', $provider['scopes']);
++		self::assertTrue($provider['auto_register']);
++	}
++
++	public function testTheHostIsMatchedCaseInsensitivelyAndWithoutItsPort(): void {
++		$overrides = ['b.example' => ['client_id' => 'freshrss-b']];
++		$provider = FreshRSS_Oidc::selectProvider($this->defaultProvider(), $overrides, 'B.Example:8443');
++		self::assertSame('freshrss-b', $provider['client_id']);
++	}
++
++	public function testAWildcardEntryCoversUnlistedHosts(): void {
++		$overrides = ['*' => ['client_id' => 'fallback-client']];
++		$provider = FreshRSS_Oidc::selectProvider($this->defaultProvider(), $overrides, 'c.example');
++		self::assertSame('fallback-client', $provider['client_id']);
++	}
++
++	public function testAnIssuerIsShorthandForTheDiscoveryUrl(): void {
++		$overrides = ['b.example' => ['issuer' => 'https://auth.b.example/']];
++		$provider = FreshRSS_Oidc::selectProvider($this->defaultProvider(), $overrides, 'b.example');
++		self::assertSame('https://auth.b.example/.well-known/openid-configuration', $provider['metadata_url']);
++	}
++
++	public function testAnExplicitMetadataUrlWinsOverTheIssuerShorthand(): void {
++		$overrides = ['b.example' => [
++			'issuer' => 'https://auth.b.example',
++			'metadata_url' => 'https://auth.b.example/custom/.well-known/openid-configuration',
++		]];
++		$provider = FreshRSS_Oidc::selectProvider($this->defaultProvider(), $overrides, 'b.example');
++		self::assertSame('https://auth.b.example/custom/.well-known/openid-configuration', $provider['metadata_url']);
 +	}
 +}
 diff --git a/tests/lib/Minz/RequestTest.php b/tests/lib/Minz/RequestTest.php
