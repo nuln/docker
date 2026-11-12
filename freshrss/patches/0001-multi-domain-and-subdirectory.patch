@@ -1036,17 +1036,17 @@ index a82a0da7e..cc489291a 100644
   * @property-read bool $simplepie_syslog_enabled
   * @property-read bool $suppress_csp_warning
 diff --git a/app/i18n/en/admin.php b/app/i18n/en/admin.php
-index 0d2a3dd5e..c34856d70 100644
+index 0d2a3dd5e..e5e857916 100644
 --- a/app/i18n/en/admin.php
 +++ b/app/i18n/en/admin.php
-@@ -17,6 +17,7 @@ return array(
- 		'api_enabled' => 'Allow <abbr>API</abbr> access <small>(required for mobile apps and sharing user queries)</small>',
+@@ -18,6 +18,7 @@ return array(
  		'form' => 'Web form (traditional, requires JavaScript)',
  		'http' => 'HTTP (advanced: managed by Web server, OIDC, SSO…)',
-+		'oidc' => 'OpenID Connect (handled by FreshRSS itself)',
  		'none' => 'None (dangerous)',
++		'oidc' => 'OpenID Connect (handled by FreshRSS itself)',
  		'title' => 'Authentication',
  		'token' => 'Master authentication token',
+ 		'token_help' => 'Allows access to all RSS outputs of the user as well as refreshing feeds without authentication:',
 @@ -81,6 +82,7 @@ return array(
  		'auto-update-url' => 'Auto-update server URL',
  		'base-url' => array(
@@ -1067,21 +1067,21 @@ index 0d2a3dd5e..c34856d70 100644
  			'help' => 'About <a href="https://freshrss.github.io/FreshRSS/en/users/WebSub.html" target="_blank">WebSub</a>',
  		),
 diff --git a/app/i18n/en/feedback.php b/app/i18n/en/feedback.php
-index 26ba40912..ce0b87fe8 100644
+index 26ba40912..adea93370 100644
 --- a/app/i18n/en/feedback.php
 +++ b/app/i18n/en/feedback.php
-@@ -25,6 +25,11 @@ return array(
+@@ -32,6 +32,11 @@ return array(
+ 		'logout' => array(
+ 			'success' => 'You are disconnected',
  		),
- 	),
- 	'auth' => array(
 +		'oidc' => array(
 +			'misconfigured' => 'OpenID Connect is the configured login method, but it is not configured: set the provider metadata URL, the client id and the client secret.',
 +			'provider' => 'The identity provider could not be reached. Try again in a moment.',
 +			'refused' => 'The identity provider refused the sign-in.',
 +		),
- 		'login' => array(
- 			'invalid' => 'Login is invalid',
- 			'success' => 'You are connected',
+ 	),
+ 	'conf' => array(
+ 		'error' => 'An error occurred while saving configuration',
 diff --git a/app/i18n/en/gen.php b/app/i18n/en/gen.php
 index 2606ee1fb..83230d045 100644
 --- a/app/i18n/en/gen.php
@@ -1098,33 +1098,33 @@ index 2606ee1fb..83230d045 100644
  			'_' => 'Password',
  			'format' => '<small>At least 7 characters</small>',
 diff --git a/app/i18n/zh-CN/admin.php b/app/i18n/zh-CN/admin.php
-index f870258ab..66d5ca8b7 100644
+index f870258ab..078b9f146 100644
 --- a/app/i18n/zh-CN/admin.php
 +++ b/app/i18n/zh-CN/admin.php
-@@ -17,6 +17,7 @@ return array(
- 		'api_enabled' => '允许 <abbr>API</abbr> 访问 <small>（用于手机应用和分享用户查询）</small>',
+@@ -18,6 +18,7 @@ return array(
  		'form' => '网页表单（传统方式, 需要 JavaScript)',
  		'http' => 'HTTP（高级：由 Web 服务器、OIDC、SSO 管理…）',
-+		'oidc' => 'OpenID Connect（由 FreshRSS 自身处理）',
  		'none' => '无（危险）',
++		'oidc' => 'OpenID Connect（由 FreshRSS 自身处理）',
  		'title' => '认证',
  		'token' => '主验证 token',
+ 		'token_help' => '允许不验证而访问用户的全部 RSS 输出以及刷新订阅源：',
 diff --git a/app/i18n/zh-CN/feedback.php b/app/i18n/zh-CN/feedback.php
-index 62f1a4694..a4dc58164 100644
+index 62f1a4694..860bf5e70 100644
 --- a/app/i18n/zh-CN/feedback.php
 +++ b/app/i18n/zh-CN/feedback.php
-@@ -25,6 +25,11 @@ return array(
+@@ -32,6 +32,11 @@ return array(
+ 		'logout' => array(
+ 			'success' => '已登出',
  		),
- 	),
- 	'auth' => array(
 +		'oidc' => array(
 +			'misconfigured' => '当前登录方式为 OpenID Connect，但尚未配置：请设置提供方元数据地址、客户端 ID 与客户端密钥。',
 +			'provider' => '无法连接身份提供方，请稍后重试。',
 +			'refused' => '身份提供方拒绝了本次登录。',
 +		),
- 		'login' => array(
- 			'invalid' => '用户名或密码无效',
- 			'success' => '登录成功',
+ 	),
+ 	'conf' => array(
+ 		'error' => '保存配置时出错',
 diff --git a/app/i18n/zh-CN/gen.php b/app/i18n/zh-CN/gen.php
 index 8f18a49e4..0c9b71fe1 100644
 --- a/app/i18n/zh-CN/gen.php
