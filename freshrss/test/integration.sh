@@ -1429,6 +1429,7 @@ docker run -d --name frss-oidcpath --network "$NET" -p "${PATH_PORT}:80" \
 	-e 'OIDC_CLIENT_ID=freshrss' \
 	-e 'OIDC_CLIENT_SECRET=test-secret' \
 	-e 'OIDC_ALLOW_INSECURE=1' \
+	-e 'OIDC_USERNAME_MAP={"dave":"alice"}' \
 	-v "${DATA_PD}:/var/www/FreshRSS/data" "$IMAGE" >/dev/null
 wait_http "http://127.0.0.1:${PATH_PORT}${DEEP_PREFIX}/i/?step=1" || true
 docker exec frss-oidcpath php /var/www/FreshRSS/cli/do-install.php \
@@ -1478,8 +1479,12 @@ is "the code was exchanged at the provider's own token endpoint" \
 		echo (string)curl_exec($c);' 2>/dev/null | grep -c "authorization_code")" "1"
 is  "replaying the callback is refused"                "$(jget_p replay_status)" "403"
 has "logout goes to the provider under its path"       "$(jget_p logout_location)" "idp-path:9500/auth/logout"
-is  "the provider's user was registered" \
-	"$(docker exec frss-oidcpath php /var/www/FreshRSS/cli/list-users.php 2>/dev/null | grep -c '^dave$')" "1"
+# The provider calls this user `dave`, the existing FreshRSS account is `alice`, and the map binds
+# the two. Nothing new must be created: the login has to land in the account that already holds the
+# subscriptions.
+is "the provider identity signs in as the existing account" "$(jget_p logged_in)" "True"
+is "…and no second account was created" \
+	"$(docker exec frss-oidcpath php /var/www/FreshRSS/cli/list-users.php 2>/dev/null | sort | tr '\n' ',')" "alice,"
 rm -f "$json_p"
 docker rm -f frss-oidcpath mock-idp-path >/dev/null 2>&1
 rm -rf "$DATA_PD" "$IDP_P_STATE" 2>/dev/null || true

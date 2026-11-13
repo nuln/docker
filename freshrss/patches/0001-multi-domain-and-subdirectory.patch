@@ -347,10 +347,10 @@ index f00456666..b7fe4ab30 100644
  				return false;
 diff --git a/app/Models/Oidc.php b/app/Models/Oidc.php
 new file mode 100644
-index 000000000..7f8439a0c
+index 000000000..bf2956b7c
 --- /dev/null
 +++ b/app/Models/Oidc.php
-@@ -0,0 +1,756 @@
+@@ -0,0 +1,817 @@
 +<?php
 +declare(strict_types=1);
 +
@@ -411,7 +411,8 @@ index 000000000..7f8439a0c
 +	 * single-provider deployment needs no map at all.
 +	 *
 +	 * @return array{metadata_url:string,client_id:string,client_secret:string,scopes:string,
-+	 *               claim:string,auto_register:bool,allow_insecure:bool,logout_redirect:bool}
++	 *               claim:string,username_map:array<string,string>,auto_register:bool,
++	 *               allow_insecure:bool,logout_redirect:bool}
 +	 */
 +	public static function providerForHost(string $host): array {
 +		return self::selectProvider(self::defaultProvider(), self::providerOverrides(), $host);
@@ -426,10 +427,12 @@ index 000000000..7f8439a0c
 +	 * already configured.
 +	 *
 +	 * @param array{metadata_url:string,client_id:string,client_secret:string,scopes:string,
-+	 *              claim:string,auto_register:bool,allow_insecure:bool,logout_redirect:bool} $default
++	 *              claim:string,username_map:array<string,string>,auto_register:bool,
++	 *              allow_insecure:bool,logout_redirect:bool} $default
 +	 * @param array<string,array<string,mixed>> $overrides host, or `*`, to partial provider settings
 +	 * @return array{metadata_url:string,client_id:string,client_secret:string,scopes:string,
-+	 *               claim:string,auto_register:bool,allow_insecure:bool,logout_redirect:bool}
++	 *               claim:string,username_map:array<string,string>,auto_register:bool,
++	 *               allow_insecure:bool,logout_redirect:bool}
 +	 */
 +	public static function selectProvider(array $default, array $overrides, string $host): array {
 +		$host = strtolower(trim($host));
@@ -456,6 +459,16 @@ index 000000000..7f8439a0c
 +				$provider[$key] = $value;
 +			}
 +		}
++		$map = $entry['username_map'] ?? null;
++		if (is_array($map)) {
++			$clean = [];
++			foreach ($map as $from => $to) {
++				if (is_string($from) && $from !== '' && is_string($to) && $to !== '') {
++					$clean[$from] = $to;
++				}
++			}
++			$provider['username_map'] = $clean;
++		}
 +		foreach (['auto_register', 'allow_insecure', 'logout_redirect'] as $key) {
 +			if (isset($entry[$key])) {
 +				$provider[$key] = (bool)$entry[$key];
@@ -468,7 +481,8 @@ index 000000000..7f8439a0c
 +	 * The top-level provider, used for any host without an entry of its own.
 +	 *
 +	 * @return array{metadata_url:string,client_id:string,client_secret:string,scopes:string,
-+	 *               claim:string,auto_register:bool,allow_insecure:bool,logout_redirect:bool}
++	 *               claim:string,username_map:array<string,string>,auto_register:bool,
++	 *               allow_insecure:bool,logout_redirect:bool}
 +	 */
 +	private static function defaultProvider(): array {
 +		$conf = FreshRSS_Context::systemConf();
@@ -489,6 +503,30 @@ index 000000000..7f8439a0c
 +			$claim = 'preferred_username';
 +		}
 +
++		$usernameMap = [];
++		$rawMap = self::env('OIDC_USERNAME_MAP');
++		if ($rawMap !== null) {
++			$decodedMap = json_decode($rawMap, true);
++			if (is_array($decodedMap)) {
++				foreach ($decodedMap as $from => $to) {
++					if (is_string($from) && $from !== '' && is_string($to) && $to !== '') {
++						$usernameMap[$from] = $to;
++					}
++				}
++			} else {
++				Minz_Log::warning('OIDC_USERNAME_MAP is not valid JSON; ignored');
++			}
++		} else {
++			$fromConf = $conf->oidc_username_map;
++			if (is_array($fromConf)) {
++				foreach ($fromConf as $from => $to) {
++					if (is_string($from) && $from !== '' && is_string($to) && $to !== '') {
++						$usernameMap[$from] = $to;
++					}
++				}
++			}
++		}
++
 +		$autoRegister = self::env('OIDC_AUTO_REGISTER');
 +		$allowInsecure = self::env('OIDC_ALLOW_INSECURE');
 +		$logoutRedirect = self::env('OIDC_LOGOUT_REDIRECT');
@@ -499,6 +537,7 @@ index 000000000..7f8439a0c
 +			'client_secret' => self::env('OIDC_CLIENT_SECRET') ?? $conf->oidc_client_secret,
 +			'scopes' => $scopes,
 +			'claim' => $claim,
++			'username_map' => $usernameMap,
 +			'auto_register' => $autoRegister === null ? $conf->oidc_auto_register : $autoRegister !== '0',
 +			'allow_insecure' => $allowInsecure === null ? $conf->oidc_allow_insecure : $allowInsecure !== '0',
 +			'logout_redirect' => $logoutRedirect === null ? $conf->oidc_logout_redirect : $logoutRedirect !== '0',
@@ -531,10 +570,12 @@ index 000000000..7f8439a0c
 +	}
 +
 +	/** @return array{metadata_url:string,client_id:string,client_secret:string,scopes:string,
-+	 *               claim:string,auto_register:bool,allow_insecure:bool,logout_redirect:bool} */
++	 *               claim:string,username_map:array<string,string>,auto_register:bool,
++	 *               allow_insecure:bool,logout_redirect:bool} */
 +	private static function cfg(): array {
 +		/** @var array{metadata_url:string,client_id:string,client_secret:string,scopes:string,
-+		 *       claim:string,auto_register:bool,allow_insecure:bool,logout_redirect:bool} */
++		 *       claim:string,username_map:array<string,string>,auto_register:bool,
++		 *       allow_insecure:bool,logout_redirect:bool} */
 +		return self::config();
 +	}
 +
@@ -808,14 +849,34 @@ index 000000000..7f8439a0c
 +	 * @throws Minz_Exception
 +	 */
 +	public static function usernameFromClaims(array $claims): string {
-+		$claim = self::cfg()['claim'];
++		$provider = self::cfg();
++		return self::resolveUsername($claims, $provider['claim'], $provider['username_map']);
++	}
++
++	/**
++	 * Turn the identity provider's name for a user into the FreshRSS account to sign in as.
++	 *
++	 * The two are usually the same string, and then this is the identity. When they differ — the
++	 * provider says `alice@corp.example` while the account is `alice` — an explicit map says which
++	 * account a provider identity owns. That is the only safe way to bind: guessing from an email
++	 * local part or a display name would let one account claim another.
++	 *
++	 * @param array<string,mixed> $claims
++	 * @param array<string,string> $usernameMap provider identity => FreshRSS username
++	 * @throws Minz_Exception
++	 */
++	public static function resolveUsername(array $claims, string $claim, array $usernameMap): string {
 +		$username = $claims[$claim] ?? null;
 +		if (!is_string($username) || $username === '') {
 +			throw new Minz_Exception('OIDC ID token has no usable “' . $claim . '” claim');
 +		}
 +		$username = trim($username);
++		$mapped = $usernameMap[$username] ?? '';
++		if ($mapped !== '') {
++			$username = $mapped;
++		}
 +		if (!FreshRSS_user_Controller::checkUsername($username)) {
-+			throw new Minz_Exception('OIDC claim “' . $claim . '” is not a valid FreshRSS username');
++			throw new Minz_Exception('the identity provider’s name is not a valid FreshRSS username');
 +		}
 +		return $username;
 +	}
@@ -1108,10 +1169,10 @@ index 000000000..7f8439a0c
 +	}
 +}
 diff --git a/app/Models/SystemConfiguration.php b/app/Models/SystemConfiguration.php
-index a82a0da7e..771f1fe4b 100644
+index a82a0da7e..433c83e3e 100644
 --- a/app/Models/SystemConfiguration.php
 +++ b/app/Models/SystemConfiguration.php
-@@ -17,6 +17,17 @@ declare(strict_types=1);
+@@ -17,6 +17,18 @@ declare(strict_types=1);
   * @property string $default_user
   * @property string $email_validation_token
   * @property bool $force_email_validation
@@ -1125,11 +1186,12 @@ index a82a0da7e..771f1fe4b 100644
 + * @property bool $oidc_auto_register
 + * @property bool $oidc_allow_insecure
 + * @property bool $oidc_logout_redirect
++ * @property array<string,string> $oidc_username_map
 + * @property array<string,array<string,mixed>> $oidc_providers
   * @property-read bool $http_auth_auto_register
   * @property-read string $http_auth_auto_register_email_field
   * @property string $language
-@@ -26,6 +37,9 @@ declare(strict_types=1);
+@@ -26,6 +38,9 @@ declare(strict_types=1);
   * @property-read string $meta_description
   * @property-read int $nb_parallel_refresh
   * @property-read bool $pubsubhubbub_enabled
@@ -1568,7 +1630,7 @@ index d2568a925..4ba396859 100755
  	}
  }
 diff --git a/config.default.php b/config.default.php
-index 1a05bcdc8..a98f13db6 100644
+index 1a05bcdc8..e9a8cc4f6 100644
 --- a/config.default.php
 +++ b/config.default.php
 @@ -18,13 +18,37 @@ return [
@@ -1614,7 +1676,7 @@ index 1a05bcdc8..a98f13db6 100644
  	# Specify address of the FreshRSS auto-update server.
  	'auto_update_url' => 'https://update.freshrss.org',
  
-@@ -63,8 +87,40 @@ return [
+@@ -63,8 +87,46 @@ return [
  	#	`http_auth` is an access controlled by the HTTP Web server (e.g. `/FreshRSS/p/i/.htaccess` for Apache)
  	#		if you use `http_auth`, remember to protect only `/FreshRSS/p/i/`,
  	#		and in particular not protect `/FreshRSS/p/api/` if you would like to use the API (different login system).
@@ -1640,6 +1702,12 @@ index 1a05bcdc8..a98f13db6 100644
 +	'oidc_allow_insecure' => false,
 +	# Also end the session at the provider on logout (RP-initiated logout), when it advertises one.
 +	'oidc_logout_redirect' => true,
++	# Bind an identity provider's name to an existing FreshRSS account, when they differ. Keys are the
++	# value of the claim above (`preferred_username`), values are FreshRSS usernames. A name that is
++	# not listed is used as-is, which is the normal case: same name, same account.
++	# `OIDC_USERNAME_MAP` (JSON) takes precedence.
++	# Example: 'oidc_username_map' => ['alice@corp.example' => 'alice'],
++	'oidc_username_map' => [],
 +	# Per-host providers, for an instance served through several domains that each have their own
 +	# identity provider. Keys are host names (or `*` as the fallback for unlisted hosts); values
 +	# override the settings above for that host. `OIDC_PROVIDERS` (JSON) takes precedence.
@@ -2146,10 +2214,10 @@ index 000000000..ea5439524
 \ No newline at end of file
 diff --git a/tests/app/Models/OidcTest.php b/tests/app/Models/OidcTest.php
 new file mode 100644
-index 000000000..a120baf5b
+index 000000000..c1e3f97d9
 --- /dev/null
 +++ b/tests/app/Models/OidcTest.php
-@@ -0,0 +1,293 @@
+@@ -0,0 +1,336 @@
 +<?php
 +declare(strict_types=1);
 +
@@ -2379,7 +2447,8 @@ index 000000000..a120baf5b
 +	// ---------------------------------------------------------------------------------------
 +
 +	/** @return array{metadata_url:string,client_id:string,client_secret:string,scopes:string,
-+	 *               claim:string,auto_register:bool,allow_insecure:bool,logout_redirect:bool} */
++	 *               claim:string,username_map:array<string,string>,auto_register:bool,
++	 *               allow_insecure:bool,logout_redirect:bool} */
 +	private function defaultProvider(): array {
 +		return [
 +			'metadata_url' => 'https://auth.a.example/.well-known/openid-configuration',
@@ -2387,6 +2456,7 @@ index 000000000..a120baf5b
 +			'client_secret' => 'secret-a',
 +			'scopes' => 'openid profile',
 +			'claim' => 'preferred_username',
++			'username_map' => [],
 +			'auto_register' => true,
 +			'allow_insecure' => false,
 +			'logout_redirect' => true,
@@ -2441,6 +2511,47 @@ index 000000000..a120baf5b
 +		]];
 +		$provider = FreshRSS_Oidc::selectProvider($this->defaultProvider(), $overrides, 'b.example');
 +		self::assertSame('https://auth.b.example/custom/.well-known/openid-configuration', $provider['metadata_url']);
++	}
++
++	// ---------------------------------------------------------------------------------------
++	// Binding a provider identity to an existing account
++	// ---------------------------------------------------------------------------------------
++
++	public function testTheProviderNameIsUsedAsIsWhenNoMapIsConfigured(): void {
++		$name = FreshRSS_Oidc::resolveUsername(['preferred_username' => 'alice'], 'preferred_username', []);
++		self::assertSame('alice', $name);
++	}
++
++	public function testAMappedIdentitySignsInAsTheExistingAccount(): void {
++		$name = FreshRSS_Oidc::resolveUsername(
++			['preferred_username' => 'alice@corp.example'],
++			'preferred_username',
++			['alice@corp.example' => 'alice'],
++		);
++		self::assertSame('alice', $name);
++	}
++
++	public function testAnUnmappedIdentityIsUnaffectedByOtherEntries(): void {
++		$name = FreshRSS_Oidc::resolveUsername(
++			['preferred_username' => 'bob@corp.example'],
++			'preferred_username',
++			['alice@corp.example' => 'alice'],
++		);
++		self::assertSame('bob@corp.example', $name);
++	}
++
++	public function testAMapCannotPointAtAnInvalidUsername(): void {
++		$this->expectException(Minz_Exception::class);
++		FreshRSS_Oidc::resolveUsername(
++			['preferred_username' => 'alice@corp.example'],
++			'preferred_username',
++			['alice@corp.example' => 'not a valid name'],
++		);
++	}
++
++	public function testAMissingClaimIsRefused(): void {
++		$this->expectException(Minz_Exception::class);
++		FreshRSS_Oidc::resolveUsername(['email' => 'alice@corp.example'], 'preferred_username', []);
 +	}
 +}
 diff --git a/tests/lib/Minz/RequestTest.php b/tests/lib/Minz/RequestTest.php

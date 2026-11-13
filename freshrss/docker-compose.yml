@@ -83,6 +83,8 @@ services:
       # OIDC_SCOPES: openid profile email
       # OIDC_REMOTE_USER_CLAIM: preferred_username
       # OIDC_AUTO_REGISTER: '1'
+      # Bind a provider identity to an existing account when the names differ:
+      # OIDC_USERNAME_MAP: '{"alice@corp.example":"alice"}'
       # One provider per domain (each domain has its own IdP); unlisted hosts use the values above:
       # OIDC_PROVIDERS: '{"a.example":{"metadata_url":"https://auth.a.example/.well-known/openid-configuration","client_id":"a","client_secret":"..."},"b.example":{"issuer":"https://auth.b.example","client_id":"b","client_secret":"..."}}'
       #

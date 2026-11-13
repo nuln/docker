@@ -600,6 +600,36 @@ The session cookie stays host-only, so each domain has its own login. The **acco
 shared**: every domain maps the same claim to the same FreshRSS user, so a user moving from one
 domain to the other is re-authenticated by the IdP and lands in the same account.
 
+#### Binding a provider identity to an existing account
+
+The FreshRSS account is the value of `OIDC_REMOTE_USER_CLAIM` (default `preferred_username`). When it
+already equals an existing username, that account is used — nothing to configure.
+
+When they differ (account `alice`, provider says `alice@corp.example`), map the provider identity to
+the account:
+
+```yaml
+environment:
+  OIDC_USERNAME_MAP: '{"alice@corp.example":"alice","bob@corp.example":"bob"}'
+```
+
+or, per host, inside `OIDC_PROVIDERS`:
+
+```json
+"a.com": { "issuer": "…", "client_id": "…", "client_secret": "…",
+           "username_map": { "alice@corp.example": "alice" } }
+```
+
+- unmapped identities are used as-is, so a map only contains the exceptions;
+- the mapped value must be a valid FreshRSS username;
+- the existing account keeps its subscriptions, labels and API token — only the way in changes.
+
+Mapping is explicit on purpose: deriving a username from an email local part or a display name would
+let one provider identity sign in as an account that belongs to someone else.
+
+Once `auth_type=oidc` is active the password form is gone, so the account's old password no longer
+opens anything (that is the intent). The API token keeps working for mobile clients.
+
 #### One identity provider per domain
 
 One metadata URL covers a single provider. When **each domain has its own** — `auth.a.example` for
@@ -690,6 +720,7 @@ behind a proxy that strips the prefix (`mod_auth_openidc` compares the path Apac
 | `OIDC_REMOTE_USER_CLAIM` | `preferred_username` | which claim becomes the FreshRSS username |
 | `OIDC_AUTO_REGISTER` | `1` | create the FreshRSS account on first login |
 | `OIDC_PROVIDERS` | *(empty)* | JSON map of `host` → provider settings, for one provider per domain; unlisted hosts use the top-level `OIDC_*` values |
+| `OIDC_USERNAME_MAP` | *(empty)* | JSON map of provider identity → existing FreshRSS username, when the two differ |
 | `OIDC_LOGOUT_REDIRECT` | `1` | also end the provider session on logout |
 | `OIDC_ALLOW_INSECURE` | `0` | allow an `http://` provider — tests/local development only |
 | `FRESHRSS_CSP_WARNING` | `0` | set to `1` to restore FreshRSS's "unsafe-eval" notice on admin pages. It is silenced by default: the policy forbids `unsafe-eval` on purpose and no shipped script needs it, so the notice only ever looked like a fault |
