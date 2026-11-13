@@ -45,7 +45,7 @@ pass=0
 fail=0
 
 cleanup() {
-	docker rm -f frss-sub frss-root frss-oidc frss-oidc2 frss-env frss-env2 frss-strip frss-wsub frss-wsub2 frss-cli frss-i mock-idp mock-idp-b websub-hub publisher smtp-sink frss-mail frss-hosts frss-oidcphp frss-oidcmulti >/dev/null 2>&1 || true
+	docker rm -f frss-sub frss-root frss-oidc frss-oidc2 frss-env frss-env2 frss-strip frss-wsub frss-wsub2 frss-cli frss-i mock-idp mock-idp-b mock-idp-path websub-hub publisher smtp-sink frss-mail frss-hosts frss-oidcphp frss-oidcmulti frss-oidcpath >/dev/null 2>&1 || true
 	docker network rm "$NET" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -1402,6 +1402,87 @@ is    "each provider's user was registered" \
 rm -f "$json_a" "$json_b"
 docker rm -f frss-oidcmulti mock-idp-b >/dev/null 2>&1
 rm -rf "$DATA_M" "$IDP_B_STATE" 2>/dev/null || true
+
+echo "== 5l. both FreshRSS and the provider under sub-directories =="
+# The realistic shape: https://host/freshrss/ for the instance, https://host/oidc/ for the provider.
+# Here the provider lives under `/auth`, so its issuer carries a path and every endpoint (discovery,
+# authorize, token, jwks, logout) hangs off it. The instance is put one level deeper than the other
+# sections — `/apps/freshrss` — so the sub-directory handling is exercised on both sides at once.
+IDP_P_STATE="$(mktemp -d)"
+cp "${SCRIPT_DIR}/mock-idp.php" "${IDP_P_STATE}/index.php"
+docker rm -f mock-idp-path >/dev/null 2>&1
+docker run -d --name mock-idp-path --network "$NET" --network-alias idp-path \
+	-e IDP_ISSUER_HOST=idp-path -e IDP_BASE_PATH=/auth -e OIDC_MOCK_USER=dave \
+	-v "${IDP_P_STATE}":/srv php:8.3-cli php -S 0.0.0.0:9500 -t /srv /srv/index.php >/dev/null
+for _ in $(seq 30); do
+	case "$(get "http://127.0.0.1:${IDP_PORT}/.well-known/openid-configuration")" in *issuer*) break;; esac
+	sleep 1
+done
+
+DEEP_PREFIX='/apps/freshrss'
+DATA_PD="$(mktemp -d)"
+PATH_PORT=18121
+docker rm -f frss-oidcpath >/dev/null 2>&1
+docker run -d --name frss-oidcpath --network "$NET" -p "${PATH_PORT}:80" \
+	-e "FRESHRSS_PATH_PREFIX=${DEEP_PREFIX}" \
+	-e 'OIDC_ISSUER=http://idp-path:9500/auth' \
+	-e 'OIDC_CLIENT_ID=freshrss' \
+	-e 'OIDC_CLIENT_SECRET=test-secret' \
+	-e 'OIDC_ALLOW_INSECURE=1' \
+	-v "${DATA_PD}:/var/www/FreshRSS/data" "$IMAGE" >/dev/null
+wait_http "http://127.0.0.1:${PATH_PORT}${DEEP_PREFIX}/i/?step=1" || true
+docker exec frss-oidcpath php /var/www/FreshRSS/cli/do-install.php \
+	--default-user alice --db-type sqlite --db-base /var/www/FreshRSS/data/db.sqlite \
+	--auth-type oidc >/dev/null 2>&1 || true
+docker exec frss-oidcpath php /var/www/FreshRSS/cli/create-user.php \
+	--user alice --password 'unused-password' >/dev/null 2>&1 || true
+docker exec frss-oidcpath sh -c 'chown -R :www-data /var/www/FreshRSS/data; chmod -R g+rwX /var/www/FreshRSS/data'
+docker cp "${SCRIPT_DIR}/oidc-php-flow.php" frss-oidcpath:/tmp/oidc-php-flow.php
+sleep 1
+
+# The discovery document is derived from the issuer, which ends in a path: the append has to keep
+# `/auth` and not collapse it to the host root. Fetched from inside the instance, which is the only
+# place that can resolve the provider's name.
+disc_path="$(docker exec frss-oidcpath php -r '
+	$c = curl_init("http://idp-path:9500/auth/.well-known/openid-configuration");
+	curl_setopt_array($c, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 10]);
+	echo (string)curl_exec($c);' 2>/dev/null)"
+is "the provider advertises the issuer with its sub-directory" \
+	"$(printf '%s' "$disc_path" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("issuer",""))' 2>/dev/null)" \
+	'http://idp-path:9500/auth'
+# …and it really is mounted there: the same path without the prefix must not answer.
+is "the discovery document is not served at the host root" \
+	"$(docker exec frss-oidcpath php -r '
+		$c = curl_init("http://idp-path:9500/.well-known/openid-configuration");
+		curl_setopt_array($c, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 10]);
+		curl_exec($c);
+		echo (int)curl_getinfo($c, CURLINFO_RESPONSE_CODE);' 2>/dev/null)" "404"
+
+flow_p="$(docker exec frss-oidcpath php /tmp/oidc-php-flow.php 'http://127.0.0.1' "$DEEP_PREFIX" replay 2>&1 || true)"
+json_p="$(mktemp)"; printf '%s' "$flow_p" > "$json_p"
+jget_p() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$json_p" "$1" 2>/dev/null || echo "<missing>"; }
+
+is  "the login page serves from the deep prefix"       "$(jget_p signin_page)" "True"
+is  "starting the flow redirects to the provider"      "$(jget_p authorize_status)" "303"
+has "…under the provider's own sub-directory"          "$(jget_p authorize_location)" "idp-path:9500/auth/authorize"
+has "…still using PKCE"                                "$(jget_p authorize_location)" "code_challenge_method=S256"
+has "…and a callback inside the deep prefix"           "$(jget_p authorize_location)" "redirect_uri=http%3A%2F%2F127.0.0.1%2Fapps%2Ffreshrss%2Fi"
+is  "the callback establishes a session"               "$(jget_p callback_status)" "302"
+is  "the session is authenticated"                     "$(jget_p logged_in)" "True"
+# The token endpoint lives under the provider's path too; if the endpoints had been rebuilt from the
+# host only, this exchange would have gone to `/token` and failed.
+is "the code was exchanged at the provider's own token endpoint" \
+	"$(docker exec frss-oidcpath php -r '
+		$c = curl_init("http://idp-path:9500/auth/token-log");
+		curl_setopt_array($c, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 10]);
+		echo (string)curl_exec($c);' 2>/dev/null | grep -c "authorization_code")" "1"
+is  "replaying the callback is refused"                "$(jget_p replay_status)" "403"
+has "logout goes to the provider under its path"       "$(jget_p logout_location)" "idp-path:9500/auth/logout"
+is  "the provider's user was registered" \
+	"$(docker exec frss-oidcpath php /var/www/FreshRSS/cli/list-users.php 2>/dev/null | grep -c '^dave$')" "1"
+rm -f "$json_p"
+docker rm -f frss-oidcpath mock-idp-path >/dev/null 2>&1
+rm -rf "$DATA_PD" "$IDP_P_STATE" 2>/dev/null || true
 
 echo "== 6. domain-root deployment keeps upstream behaviour"
 ru=$(header -H 'Host: a.example' -H 'X-Forwarded-Host: a.example' -H 'X-Forwarded-Proto: https' \

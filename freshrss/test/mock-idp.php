@@ -14,7 +14,11 @@ declare(strict_types=1);
 // It is overridable so a test can run two providers side by side on one network (one per domain).
 define('ISSUER_HOST', getenv('IDP_ISSUER_HOST') ?: 'idp');
 define('ISSUER_PORT', (int)(getenv('IDP_ISSUER_PORT') ?: 9500));
-define('ISSUER', 'http://' . ISSUER_HOST . ':' . ISSUER_PORT);
+// The provider may itself be deployed under a sub-directory, in which case its issuer carries that
+// path and every endpoint hangs off it. The discovery document is then at
+// `<issuer>/.well-known/openid-configuration` — appended, as OpenID Connect specifies.
+define('BASE_PATH', rtrim((string)(getenv('IDP_BASE_PATH') ?: ''), '/'));
+define('ISSUER', 'http://' . ISSUER_HOST . ':' . ISSUER_PORT . BASE_PATH);
 
 $dir = __DIR__ . '/idp-state';
 $keyFile = $dir . '/rsa.pem';
@@ -32,6 +36,18 @@ if (!is_file($keyFile)) {
 $privateKey = file_get_contents($keyFile);
 
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+if (BASE_PATH !== '') {
+	// Serve only under the configured path, exactly like a proxy that mounts the provider there.
+	if ($path === BASE_PATH) {
+		$path = '/';
+	} elseif (str_starts_with($path, BASE_PATH . '/')) {
+		$path = substr($path, strlen(BASE_PATH));
+	} else {
+		http_response_code(404);
+		echo "not under " . BASE_PATH . "\n";
+		exit;
+	}
+}
 parse_str((string)(parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_QUERY) ?? ''), $q);
 
 $json = static function (mixed $data, int $code = 200): never {

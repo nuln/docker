@@ -639,6 +639,28 @@ https://b.example/rss/i/?c=auth&a=oidcCallback     # at auth.b.example
 
 The metadata and JWKS caches are keyed by provider, so two providers never answer for each other.
 
+#### Both sides under sub-directories
+
+Nothing here assumes either service sits at the root of a host. A common deployment is
+
+```
+https://a.example/freshrss/     the instance   (FRESHRSS_PATH_PREFIX=/freshrss)
+https://a.example/oidc/         the provider   ( issuer https://a.example/oidc )
+```
+
+and it works unchanged:
+
+- `FRESHRSS_PATH_PREFIX` may have several segments (`/apps/freshrss` is fine), and drives the
+  Apache `Alias`, the cookie path and the callback URI;
+- the provider's issuer may carry a path. The discovery document is fetched from
+  `<issuer>/.well-known/openid-configuration` — appended, as OpenID Connect specifies — and the
+  endpoints advertised there (`authorize`, `token`, `jwks`, `end_session`) keep that path;
+- the callback is then `https://a.example/freshrss/i/?c=auth&a=oidcCallback`.
+
+`test/integration.sh` section 5l covers exactly this shape: the instance under a two-segment
+prefix, the provider under `/auth`, driven end to end, including the token exchange and logout which
+would fail if the path were dropped anywhere.
+
 #### The older Apache-module path still works
 
 `OIDC_ENABLED` and `mod_auth_openidc` are still installed and configured, for deployments that
