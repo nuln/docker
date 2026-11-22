@@ -3,7 +3,7 @@
 # CADDY_VERSION 默认 latest：
 #   - 本地 `docker build` 不传参数 → 编译当时的最新稳定版；
 #   - CI 解析出最新版本后通过 --build-arg 传入，使镜像 tag 与实际内容一致；
-#   - 需要复现或回退时显式传入，例如 --build-arg CADDY_VERSION=2.11.7。
+#   - 需要复现或回退时显式传入，例如 --build-arg CADDY_VERSION=2.11.9。
 #
 # 该 ARG 必须传进 builder 阶段并交给 xcaddy：在第一个 FROM 之前声明的 ARG
 # 只对 FROM 行生效，阶段内的 RUN 取不到它，那样 xcaddy 会自行解析 latest，

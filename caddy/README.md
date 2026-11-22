@@ -28,15 +28,15 @@ A custom Caddy image that compiles a small, curated plugin set via `xcaddy` on t
 | `caddy-exec` | Run shell commands from a handler / config |
 | `caddy-webhook` | Webhook receiver handler |
 
-Switch with `CADDY_IMAGE` in `.env` (e.g. `ghcr.io/nuln/caddy:2.11.7-full`).
+Switch with `CADDY_IMAGE` in `.env` (e.g. `ghcr.io/nuln/caddy:2.11.9-full`).
 
 ## Build
 
 The image is built automatically by CI (`.github/workflows/caddy.yml`) for multiple architectures (amd64/arm64) and pushed to:
 
 ```
-ghcr.io/nuln/caddy:<version>        # lean  (Dockerfile)          — e.g. 2.11.7
-ghcr.io/nuln/caddy:<version>-full   # full  (Dockerfile.full)     — e.g. 2.11.7-full
+ghcr.io/nuln/caddy:<version>        # lean  (Dockerfile)          — e.g. 2.11.9
+ghcr.io/nuln/caddy:<version>-full   # full  (Dockerfile.full)     — e.g. 2.11.9-full
 ghcr.io/nuln/caddy:latest           # lean
 ghcr.io/nuln/caddy:full             # full
 ```
@@ -51,8 +51,8 @@ the binary inside always agree.
 docker build -t ghcr.io/nuln/caddy:local caddy
 
 # pinned
-docker build --build-arg CADDY_VERSION=2.11.7 -t ghcr.io/nuln/caddy:2.11.7 caddy
-docker build -f caddy/Dockerfile.full --build-arg CADDY_VERSION=2.11.7 -t ghcr.io/nuln/caddy:2.11.7-full caddy
+docker build --build-arg CADDY_VERSION=2.11.9 -t ghcr.io/nuln/caddy:2.11.9 caddy
+docker build -f caddy/Dockerfile.full --build-arg CADDY_VERSION=2.11.9 -t ghcr.io/nuln/caddy:2.11.9-full caddy
 ```
 
 CI resolves the latest release once and passes it in as a build-arg, so the published tag always matches what is inside the image. The Dockerfile's `latest` default means a plain `docker build` is **not** reproducible across days — pass `--build-arg` when you need to rebuild a specific tag.

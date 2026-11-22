@@ -520,7 +520,7 @@ go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 
 # 构建 Caddy + 插件（与 caddy/Dockerfile 一致）
 # 阿里云插件来自自有仓库 nuln/caddy-plugins，按 alidns/v* tag 独立发版
-xcaddy build v2.11.7 \
+xcaddy build v2.11.9 \
   --with github.com/caddy-dns/cloudflare \
   --with github.com/nuln/caddy-plugins/alidns@v0.0.1 \
   --with github.com/mholt/caddy-l4 \
